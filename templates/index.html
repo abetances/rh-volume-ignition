@@ -22,41 +22,68 @@
         .status-waiting { background: #6e7681; color: #fff; }
         .status-error { background: #da3633; color: #fff; }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; padding: 24px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; padding: 0 16px 16px; }
         
         .card {
-            background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px;
+            background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
         }
-        .card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .card-value { font-size: 28px; font-weight: 700; color: #fff; }
-        .card-sub { font-size: 11px; color: #8b949e; margin-top: 4px; }
+        .card-title { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .card-value { font-size: 24px; font-weight: 700; color: #fff; }
+        .card-sub { font-size: 10px; color: #8b949e; margin-top: 2px; }
         
         .card.good .card-value { color: #3fb950; }
         .card.warn .card-value { color: #d29922; }
         .card.bad .card-value { color: #f85149; }
         
-        .section { padding: 0 24px 24px; }
-        .section-title { font-size: 14px; color: #8b949e; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #30363d; }
+        .section { padding: 0 16px 16px; }
+        .section-title { font-size: 13px; color: #8b949e; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #30363d; }
         
-        .feed { display: flex; flex-direction: column; gap: 8px; }
+        .feed { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
         .feed-item {
-            background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 16px;
-            display: flex; justify-content: space-between; align-items: center;
+            background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px;
+            display: flex; justify-content: space-between; align-items: center; font-size: 12px;
         }
         .feed-item .token { font-weight: 600; color: #fff; }
-        .feed-item .metric { font-size: 12px; color: #8b949e; }
-        
-        .unknown { color: #6e7681; font-style: italic; }
+        .feed-item .metric { color: #8b949e; font-size: 11px; }
         
         .logs { 
             background: #0d1117; border: 1px solid #30363d; border-radius: 6px; 
-            padding: 12px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px;
+            padding: 10px; max-height: 180px; overflow-y: auto; font-family: monospace; font-size: 10px;
         }
-        .log-entry { margin-bottom: 4px; }
+        .log-entry { margin-bottom: 3px; }
         .log-time { color: #6e7681; }
         .log-ok { color: #3fb950; }
         .log-warn { color: #d29922; }
         .log-err { color: #f85149; }
+        
+        .tier-bar { display: flex; gap: 4px; margin-top: 4px; }
+        .tier-pill { 
+            padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+        }
+        .tier-0 { background: #f85149; color: #fff; }
+        .tier-1 { background: #d29922; color: #fff; }
+        .tier-2 { background: #58a6ff; color: #fff; }
+        .tier-3 { background: #8b949e; color: #fff; }
+        .tier-4 { background: #484f58; color: #fff; }
+        
+        .event-tape { display: flex; flex-direction: column; gap: 4px; }
+        .event { 
+            padding: 6px 10px; border-radius: 4px; font-size: 11px;
+            display: flex; justify-content: space-between;
+        }
+        .event-new { background: #238636; color: #fff; }
+        .event-spike { background: #d29922; color: #fff; }
+        .event-promote { background: #58a6ff; color: #fff; }
+        .event-re awaken { background: #a371f7; color: #fff; }
+        
+        .unknown { color: #6e7681; font-style: italic; }
+        
+        .refresh-indicator {
+            position: fixed; bottom: 16px; right: 16px;
+            background: #161b22; border: 1px solid #30363d;
+            padding: 8px 12px; border-radius: 6px; font-size: 11px; color: #8b949e;
+        }
     </style>
 </head>
 <body>
@@ -65,6 +92,7 @@
         <span id="global-status" class="status-badge status-waiting">WAITING FOR DATA</span>
     </div>
     
+    <!-- Chain Status Row -->
     <div class="grid">
         <div class="card" id="card-chain">
             <div class="card-title">Chain Status</div>
@@ -75,7 +103,7 @@
         <div class="card" id="card-block">
             <div class="card-title">Last Block</div>
             <div class="card-value unknown">--</div>
-            <div class="card-sub">Syncing...</div>
+            <div class="card-sub">Lag: --</div>
         </div>
         
         <div class="card" id="card-lag">
@@ -89,50 +117,72 @@
             <div class="card-value unknown">--</div>
             <div class="card-sub">5m avg</div>
         </div>
-        
-        <div class="card" id="card-tokens">
-            <div class="card-title">Tokens Watched</div>
-            <div class="card-value">0</div>
-            <div class="card-sub">In memory</div>
-        </div>
-        
-        <div class="card" id="card-ignition">
-            <div class="card-title">Ignition Candidates</div>
-            <div class="card-value">0</div>
-            <div class="card-sub">Active signals</div>
-        </div>
     </div>
     
+    <!-- Tokens & Tiers Row -->
     <div class="grid">
+        <div class="card">
+            <div class="card-title">Tokens Watched</div>
+            <div class="card-value" id="total-tokens">0</div>
+            <div class="card-sub">In universe</div>
+        </div>
+        
+        <div class="card">
+            <div class="card-title">Tier Distribution</div>
+            <div class="tier-bar">
+                <span class="tier-pill tier-0" id="tier-0">T0: 0</span>
+                <span class="tier-pill tier-1" id="tier-1">T1: 0</span>
+                <span class="tier-pill tier-2" id="tier-2">T2: 0</span>
+                <span class="tier-pill tier-3" id="tier-3">T3: 0</span>
+                <span class="tier-pill tier-4" id="tier-4">T4: 0</span>
+            </div>
+        </div>
+        
         <div class="card">
             <div class="card-title">RPC Status</div>
             <div class="card-value unknown" id="rpc-status">UNKNOWN</div>
-            <div class="card-sub" id="rpc-provider">No provider connected</div>
+            <div class="card-sub" id="rpc-provider">No provider</div>
         </div>
         
         <div class="card">
-            <div class="card-title">Database Status</div>
-            <div class="card-value unknown" id="db-status">UNKNOWN</div>
-            <div class="card-sub" id="db-type">SQLite fallback</div>
+            <div class="card-title">Database</div>
+            <div class="card-value" id="db-status">CONNECTED</div>
+            <div class="card-sub" id="db-type">SQLite</div>
         </div>
     </div>
     
+    <!-- Event Tape -->
     <div class="section">
-        <div class="section-title">Live Token Feed</div>
-        <div class="feed" id="token-feed">
-            <div class="feed-item">
-                <span class="token">No tokens yet</span>
-                <span class="metric">Waiting for chain data...</span>
+        <div class="section-title">Live Event Tape</div>
+        <div class="event-tape" id="event-tape">
+            <div class="event event-new">
+                <span>Waiting for live data...</span>
+                <span>--:--</span>
             </div>
         </div>
     </div>
     
+    <!-- Token Feed -->
+    <div class="section">
+        <div class="section-title">Recent Token Activity</div>
+        <div class="feed" id="token-feed">
+            <div class="feed-item">
+                <span class="token">No tokens yet</span>
+                <span class="metric">Scanning chain...</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- System Logs -->
     <div class="section">
         <div class="section-title">System Logs</div>
         <div class="logs" id="logs">
             <div class="log-entry"><span class="log-time">[--:--:--]</span> <span class="log-ok">Dashboard initialized</span></div>
-            <div class="log-entry"><span class="log-time">[--:--:--]</span> <span class="log-warn">Waiting for backend connection...</span></div>
         </div>
+    </div>
+    
+    <div class="refresh-indicator" id="refresh-indicator">
+        Last refresh: --:--:--
     </div>
     
     <script>
@@ -141,11 +191,22 @@
         function log(msg, type = 'ok') {
             const time = new Date().toLocaleTimeString();
             LOGS.innerHTML = `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span></div>` + LOGS.innerHTML;
+            if (LOGS.children.length > 50) LOGS.removeChild(LOGS.lastChild);
         }
         
         function formatNumber(n) {
-            if (n === 'UNKNOWN' || n === null || n === undefined) return 'UNKNOWN';
+            if (n === 'UNKNOWN' || n === null || n === undefined || isNaN(n)) return 'UNKNOWN';
             return new Intl.NumberFormat().format(n);
+        }
+        
+        function addEventTape(type, msg) {
+            const tape = document.getElementById('event-tape');
+            const time = new Date().toLocaleTimeString();
+            const eventDiv = document.createElement('div');
+            eventDiv.className = `event event-${type}`;
+            eventDiv.innerHTML = `<span>${msg}</span><span>${time}</span>`;
+            tape.insertBefore(eventDiv, tape.firstChild);
+            if (tape.children.length > 20) tape.removeChild(tape.lastChild);
         }
         
         async function fetchStatus() {
@@ -154,16 +215,18 @@
                 if (!res.ok) throw new Error('Health endpoint returned ' + res.status);
                 const data = await res.json();
                 
-                // Update chain status
+                // Chain status
                 const chainCard = document.getElementById('card-chain');
                 if (data.chain_live) {
                     chainCard.className = 'card good';
                     chainCard.querySelector('.card-value').textContent = 'LIVE';
+                    chainCard.querySelector('.card-sub').textContent = `Block: ${formatNumber(data.last_block)}`;
                     document.getElementById('global-status').className = 'status-badge status-live';
                     document.getElementById('global-status').textContent = 'LIVE';
                 } else {
                     chainCard.className = 'card warn';
                     chainCard.querySelector('.card-value').textContent = 'OFFLINE';
+                    chainCard.querySelector('.card-sub').textContent = 'No chain data';
                     document.getElementById('global-status').className = 'status-badge status-waiting';
                     document.getElementById('global-status').textContent = 'OFFLINE';
                 }
@@ -174,20 +237,36 @@
                 
                 // Ingest lag
                 const lagCard = document.getElementById('card-lag');
-                const lag = data.ingest_lag_ms;
+                const lag = data.ingest_lag_ms || 0;
                 if (lag < 5000) {
                     lagCard.className = 'card good';
-                    lagCard.querySelector('.card-value').textContent = lag + 'ms';
                 } else if (lag < 30000) {
                     lagCard.className = 'card warn';
-                    lagCard.querySelector('.card-value').textContent = lag + 'ms';
                 } else {
                     lagCard.className = 'card bad';
-                    lagCard.querySelector('.card-value').textContent = lag + 'ms';
                 }
+                lagCard.querySelector('.card-value').textContent = lag + 'ms';
                 
                 // Events per sec
-                document.getElementById('card-events').querySelector('.card-value').textContent = formatNumber(data.events_per_sec || 0);
+                const eps = data.events_per_sec || 0;
+                const epsCard = document.getElementById('card-events');
+                if (eps > 0) {
+                    epsCard.className = 'card good';
+                } else {
+                    epsCard.className = 'card';
+                }
+                epsCard.querySelector('.card-value').textContent = eps.toFixed(2);
+                
+                // Tokens
+                document.getElementById('total-tokens').textContent = formatNumber(data.total_tokens || 0);
+                
+                // Tiers
+                const tiers = data.tier_counts || {};
+                document.getElementById('tier-0').textContent = `T0: ${tiers[0] || 0}`;
+                document.getElementById('tier-1').textContent = `T1: ${tiers[1] || 0}`;
+                document.getElementById('tier-2').textContent = `T2: ${tiers[2] || 0}`;
+                document.getElementById('tier-3').textContent = `T3: ${tiers[3] || 0}`;
+                document.getElementById('tier-4').textContent = `T4: ${tiers[4] || 0}`;
                 
                 // RPC status
                 const rpcCard = document.getElementById('rpc-status');
@@ -201,57 +280,74 @@
                 }
                 
                 // DB status
-                const dbCard = document.getElementById('db-status');
                 if (data.db_connected) {
-                    dbCard.textContent = 'CONNECTED';
+                    document.getElementById('db-status').textContent = 'CONNECTED';
                     document.getElementById('db-type').textContent = data.db_type || 'SQLite';
                 } else {
-                    dbCard.textContent = 'DISCONNECTED';
+                    document.getElementById('db-status').textContent = 'DISCONNECTED';
                 }
                 
-                log('Status updated from backend', 'ok');
+                document.getElementById('refresh-indicator').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+                
             } catch (e) {
-                log('Backend not responding: ' + e.message, 'err');
+                log('Status fetch failed: ' + e.message, 'err');
             }
         }
         
         async function fetchTokens() {
             try {
-                const res = await fetch('/api/v1/tokens');
+                const res = await fetch('/api/v1/tokens?limit=10');
                 if (!res.ok) return;
                 const tokens = await res.json();
                 
-                document.getElementById('card-tokens').querySelector('.card-value').textContent = tokens.length;
-                
-                // Update feed
                 const feed = document.getElementById('token-feed');
-                if (tokens.length === 0) {
+                if (!tokens.length) {
                     feed.innerHTML = '<div class="feed-item"><span class="token">No tokens detected</span><span class="metric">Scanning chain...</span></div>';
-                } else {
-                    feed.innerHTML = tokens.slice(0, 10).map(t => `
-                        <div class="feed-item">
-                            <span class="token">${t.token_name || 'UNKNOWN'} (${t.symbol || '???'})</span>
-                            <span class="metric">MC: $${formatNumber(t.market_cap?.value)} | Score: ${t.ignition_score || '--'}</span>
-                        </div>
-                    `).join('');
+                    return;
                 }
                 
-                // Count ignition candidates
-                const candidates = tokens.filter(t => t.ignition_score > 0.7).length;
-                document.getElementById('card-ignition').querySelector('.card-value').textContent = candidates;
+                feed.innerHTML = tokens.slice(0, 10).map(t => {
+                    const tier = t.watch_tier || 0;
+                    const tierClass = `tier-${tier}`;
+                    return `
+                        <div class="feed-item">
+                            <span class="token">${t.token_address?.slice(0, 10)}...${t.token_address?.slice(-6)}</span>
+                            <span class="metric"><span class="tier-pill ${tierClass}">T${tier}</span> | ${t.watch_reason || 'UNKNOWN'}</span>
+                        </div>
+                    `;
+                }).join('');
                 
             } catch (e) {
                 log('Token fetch failed: ' + e.message, 'err');
             }
         }
         
-        // Poll status every 5 seconds
-        setInterval(fetchStatus, 5000);
+        async function fetchTransitions() {
+            try {
+                const res = await fetch('/api/v1/transitions?limit=5');
+                if (!res.ok) return;
+                const transitions = await res.json();
+                
+                if (transitions.length) {
+                    transitions.slice(0, 3).forEach(t => {
+                        addEventTape('promote', `Token ${t.token_address?.slice(0, 6)}... promoted T${t.old_tier}→T${t.new_tier}`);
+                    });
+                }
+            } catch (e) {
+                // Silently fail for transitions
+            }
+        }
+        
+        // Poll status every 3 seconds
+        setInterval(fetchStatus, 3000);
         setInterval(fetchTokens, 10000);
+        setInterval(fetchTransitions, 15000);
         
         // Initial fetch
         fetchStatus();
         fetchTokens();
+        
+        log('Dashboard connected to backend', 'ok');
     </script>
 </body>
 </html>
