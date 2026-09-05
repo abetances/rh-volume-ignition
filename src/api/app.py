@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from flask import Flask, render_template, jsonify, request
+from dataclasses import asdict
 
 # Add project root to path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -11,6 +12,8 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.scanner import get_scanner, Scanner
 from src.db import get_database, Database
 from src.providers import get_provider_manager, ProviderManager
+from src.signals.flow_analyzer import FlowAnalyzer, get_flow_analyzer
+from src.signals.flow_processor import FlowProcessor, get_flow_processor
 
 app = Flask(__name__, 
             template_folder=os.path.join(PROJECT_ROOT, 'templates'),
@@ -20,6 +23,8 @@ app = Flask(__name__,
 _scanner: Scanner = None
 _db: Database = None
 _providers: ProviderManager = None
+_flow_analyzer: FlowAnalyzer = None
+_flow_processor: FlowProcessor = None
 
 started_at = int(time.time())
 
@@ -246,9 +251,60 @@ def system():
     })
 
 
+@app.route('/api/v1/signals/ignition')
+def signals_ignition():
+    """Get current ignition candidates."""
+    global _flow_analyzer
+    
+    if not _flow_analyzer:
+        return jsonify({"error": "Flow analyzer not initialized"})
+    
+    try:
+        candidates = _flow_analyzer.get_ignition_candidates(limit=10)
+        return jsonify({
+            "candidates": [asdict(c) for c in candidates],
+            "count": len(candidates)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route('/api/v1/signals/transitions')
+def signals_transitions():
+    """Get recent signal state transitions."""
+    global _flow_analyzer
+    
+    if not _flow_analyzer:
+        return jsonify({"error": "Flow analyzer not initialized"})
+    
+    try:
+        transitions = _flow_analyzer.get_state_transitions(limit=20)
+        return jsonify({
+            "transitions": transitions,
+            "count": len(transitions)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route('/api/v1/tokens/<address>/flow')
+def token_flow(address):
+    """Get detailed flow for a specific token."""
+    global _flow_analyzer
+    
+    if not _flow_analyzer:
+        return jsonify({"error": "Flow analyzer not initialized"})
+    
+    try:
+        flow = _flow_analyzer.get_token_flow(address.lower())
+        return jsonify(flow)
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 def init_app():
     """Initialize the application."""
-    global _scanner, _db, _providers
+    global _scanner, _db, _providers, _flow_analyzer, _flow_processor
     
     print("Initializing RH Volume Ignition...")
     
@@ -260,6 +316,11 @@ def init_app():
     # Initialize providers
     _providers = get_provider_manager()
     print(f"  Providers: {list(_providers.providers.keys())}")
+    
+    # Initialize flow processor and analyzer
+    _flow_processor = get_flow_processor()
+    _flow_analyzer = get_flow_analyzer()
+    print(f"  Flow analyzer initialized")
     
     # Initialize scanner
     _scanner = get_scanner()
