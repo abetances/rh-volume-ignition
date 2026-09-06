@@ -410,3 +410,165 @@ DEFAULT_THRESHOLDS = {
     "prior_ignition_hours": 6,  # within 6h = recent ignition
     "prior_runner_boost": 2.0,  # 2x weight for prior runner
 }
+
+
+class VolumeSaturation(Enum):
+    """Volume saturation state."""
+    BEFORE_VOLUME = "BEFORE_VOLUME"       # Early signal, raw volume not saturated
+    VOLUME_EXPANDING = "VOLUME_EXPANDING"  # Volume is growing
+    ALREADY_CROWDED = "ALREADY_CROWDED"   # Volume obvious, edge consumed
+
+
+@dataclass
+class IgnitionComponent:
+    """Individual component of composite ignition score."""
+    name: str                    # e.g., "novel_capital", "buyer_quality"
+    value: float                 # Raw value
+    normalized: float            # 0-1 normalized
+    weight: float              # Weight in composite
+    evidence_refs: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CompositeIgnitionScore:
+    """Composite ignition score combining multiple signals."""
+    token_address: str
+    score: float                # 0-100 composite score
+    confidence: float           # 0-100 confidence
+    state: SignalState          # QUIET, FORMING, IGNITION, ACCELERATING, SATURATED, FADING
+    saturation: VolumeSaturation  # BEFORE_VOLUME, VOLUME_EXPANDING, ALREADY_CROWDED
+    
+    # Component breakdown
+    components: List[IgnitionComponent] = field(default_factory=list)
+    
+    # Primary signals
+    novel_capital_usd: float = 0.0
+    novel_capital_per_second: float = 0.0
+    independent_buyer_rate: float = 0.0   # % change
+    buyer_quality: float = 0.0             # 0-100
+    
+    # Secondary signals
+    recurring_actor_present: bool = False
+    tradeability_trend: TradeabilityTrend = TradeabilityTrend.UNKNOWN
+    rotation_present: bool = False
+    reawakening_state: ReawakeningState = ReawakeningState.DORMANT
+    
+    # Evidence
+    why_now: str = ""
+    evidence_refs: List[str] = field(default_factory=list)
+    
+    # Timestamps
+    signal_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    calculated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+
+
+@dataclass
+class PaperSignalSnapshot:
+    """Immutable snapshot of signal at IGNITION detection time."""
+    # Immutable ID
+    signal_id: str
+    
+    # Token identity
+    token_address: str
+    symbol: str = ""
+    
+    # Signal time
+    signal_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    
+    # Token state at signal time
+    token_age_seconds: float = 0.0
+    market_cap_usd: float = 0.0
+    liquidity_usd: float = 0.0
+    curve_depth_usd: float = 0.0
+    
+    # Flow metrics at signal time
+    current_volume_30s: float = 0.0
+    current_volume_2m: float = 0.0
+    novel_capital: float = 0.0
+    independent_buyers: int = 0
+    buyer_quality: float = 0.0
+    
+    # Signal state
+    ignition_state: SignalState = SignalState.QUIET
+    actor_state: str = ""
+    tradeability_trend: TradeabilityTrend = TradeabilityTrend.UNKNOWN
+    rotation_state: RotationState = RotationState.UNKNOWN
+    
+    # Composite score
+    ignition_score: float = 0.0
+    confidence: float = 0.0
+    
+    # Explanation
+    why_now: str = ""
+    
+    # Arrival-time modeling
+    processing_latency_ms: int = 0
+    manual_latency_seconds: int = 60  # Default: assume 1 min manual review
+    
+    # Outcome checkpoints (filled later)
+    outcomes: Dict[str, Dict] = field(default_factory=dict)
+    
+    # Outcome classification
+    outcome_classification: str = ""  # PENDING, SUCCESS, FLOW_FAILED, etc.
+
+
+@dataclass
+class OutcomeCheckpoint:
+    """Outcome measurement at specific time horizon."""
+    horizon: str                # e.g., "+30s", "+2m", "+5m", "+10m", "+30m", "+1h", "+4h", "+24h"
+    measured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    
+    # Volume metrics
+    volume_usd: float = 0.0
+    volume_expansion_x: float = 0.0  # vs signal time
+    
+    # Market cap metrics
+    market_cap_usd: float = 0.0
+    market_cap_expansion_x: float = 0.0
+    max_market_cap_usd: float = 0.0
+    
+    # Price metrics
+    price_usd: float = 0.0
+    price_change_pct: float = 0.0
+    max_drawdown_pct: float = 0.0
+    
+    # Liquidity
+    liquidity_usd: float = 0.0
+    
+    # Theoretical vs executable
+    theoretical_return_pct: float = 0.0
+    executable_return_pct: float = 0.0
+    entry_price_executable: float = 0.0
+    slippage_bps: float = 0.0
+
+
+# Outcome classification labels
+class OutcomeClassification(Enum):
+    """Classification of signal outcome."""
+    PENDING = "PENDING"
+    SUCCESS_VOLUME_EXPANSION = "SUCCESS_VOLUME_EXPANSION"
+    FLOW_FAILED = "FLOW_FAILED"              # No volume expansion
+    BUYERS_WERE_RECYCLED = "BUYERS_WERE_RECYCLED"
+    ACTOR_FALSE_ALPHA = "ACTOR_FALSE_ALPHA"
+    LIQUIDITY_DID_NOT_IMPROVE = "LIQUIDITY_DID_NOT_IMPROVE"
+    ROTATION_FALSE = "ROTATION_FALSE"
+    IGNITION_TOO_LATE = "IGNITION_TOO_LATE"
+    IMMEDIATE_FADE = "IMMEDIATE_FADE"
+
+
+# Composite score weights (tunable)
+COMPOSITE_WEIGHTS = {
+    # Primary (40% total)
+    "novel_capital": 0.20,
+    "buyer_acceleration": 0.10,
+    "buyer_quality": 0.10,
+    
+    # Secondary confirmation (20% total)
+    "recurring_actor": 0.05,
+    "tradeability": 0.05,
+    "rotation": 0.05,
+    "reawakening": 0.05,
+    
+    # Volume freshness (40%)
+    "volume_freshness": 0.40,  # Penalize if already crowded
+}

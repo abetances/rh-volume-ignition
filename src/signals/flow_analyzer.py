@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime, timedelta, timezone, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict, deque
 from dataclasses import asdict
@@ -13,7 +13,10 @@ from src.signals import (
     SignalState, AccelerationState, TradeabilityTrend, ReawakeningState,
     LiquiditySource, LiquidityMetrics, LiquidityWindow, RotationCandidate,
     RotationState,
-    WINDOWS, LIQUIDITY_WINDOWS, DEFAULT_THRESHOLDS, WalletCluster
+    WINDOWS, LIQUIDITY_WINDOWS, DEFAULT_THRESHOLDS, WalletCluster,
+    CompositeIgnitionScore, IgnitionComponent, VolumeSaturation,
+    COMPOSITE_WEIGHTS, PaperSignalSnapshot, OutcomeCheckpoint,
+    OutcomeClassification
 )
 from src.db import get_database, Database
 
@@ -77,6 +80,9 @@ class FlowAnalyzer:
         
         # Track all trades for rotation analysis
         self._all_trades: deque = deque(maxlen=10000)  # recent trades buffer
+        
+        # Paper signal snapshots (immutable)
+        self._signal_snapshots: Dict[str, PaperSignalSnapshot] = {}
     
     def ingest_trade(self, flow: TradeFlow):
         """Ingest a single trade flow."""
@@ -855,15 +861,223 @@ class FlowAnalyzer:
     def get_rotations_for_token(self, token: str) -> Optional[RotationCandidate]:
         """Get rotation data for a specific token."""
         return self._rotation_candidates.get(token.lower())
-
-
-# Global analyzer instance
-_analyzer: Optional[FlowAnalyzer] = None
-
-
-def get_flow_analyzer() -> FlowAnalyzer:
-    """Get or create the global flow analyzer."""
-    global _analyzer
-    if _analyzer is None:
-        _analyzer = FlowAnalyzer()
-    return _analyzer
+    
+    # === COMPOSITE IGNITION SCORING ===
+    
+    def compute_composite_ignition(self, token: str) -> CompositeIgnitionScore:
+        """
+        Compute composite ignition score combining all signals.
+        
+        Returns a score 0-100 with confidence and explainable components.
+        """
+        token = token.lower()
+        now = datetime.now(timezone.utc)
+        
+        # Get metrics for different windows
+        metrics_15s = self.get_metrics(token, 15)
+        metrics_30s = self.get_metrics(token, 30)
+        # Use 5m window as longest available
+        metrics_5m = self.get_metrics(token, 300)
+        
+        # Get rotation and reawakening state
+        rotation = self._rotation_candidates.get(token)
+        reawakening = self._reawakening.get(token, ReawakeningState.DORMANT)
+        tradeability_trend = self.get_tradeability_trend(token)
+        
+        # Initialize components
+        components = []
+        
+        # === PRIMARY SIGNALS ===
+        
+        # 1. Novel capital (20%)
+        novel_cap = metrics_15s.estimated_novel_capital
+        novel_cap_normalized = min(novel_cap / 10000, 1.0)  # $10k = max
+        components.append(IgnitionComponent(
+            name="novel_capital",
+            value=novel_cap,
+            normalized=novel_cap_normalized,
+            weight=COMPOSITE_WEIGHTS["novel_capital"],
+            evidence_refs=[]
+        ))
+        
+        # 2. Buyer acceleration (10%)
+        buyer_accel = metrics_15s.vs_baseline_novel_capital
+        buyer_accel_normalized = min(max(buyer_accel - 1.0, 0) / 2.0, 1.0)  # 1x-3x = 0-1
+        components.append(IgnitionComponent(
+            name="buyer_acceleration",
+            value=buyer_accel,
+            normalized=buyer_accel_normalized,
+            weight=COMPOSITE_WEIGHTS["buyer_acceleration"],
+            evidence_refs=[]
+        ))
+        
+        # 3. Buyer quality (10%)
+        quality = metrics_15s.independence_ratio * 100  # Convert to 0-100
+        components.append(IgnitionComponent(
+            name="buyer_quality",
+            value=metrics_15s.estimated_independent_buyers,
+            normalized=quality / 100,
+            weight=COMPOSITE_WEIGHTS["buyer_quality"],
+            evidence_refs=[]
+        ))
+        
+        # === SECONDARY SIGNALS ===
+        
+        # 4. Recurring actor (5%)
+        recurring = bool(rotation and rotation.actor_id)
+        components.append(IgnitionComponent(
+            name="recurring_actor",
+            value=1.0 if recurring else 0.0,
+            normalized=1.0 if recurring else 0.0,
+            weight=COMPOSITE_WEIGHTS["recurring_actor"],
+            evidence_refs=[rotation.actor_id] if rotation else []
+        ))
+        
+        # 5. Tradeability (5%)
+        tradeability_score = {
+            TradeabilityTrend.IMPROVING: 0.7,
+            TradeabilityTrend.RAPIDLY_IMPROVING: 1.0,
+            TradeabilityTrend.STABLE: 0.3,
+            TradeabilityTrend.DETERIORATING: 0.0,
+            TradeabilityTrend.UNKNOWN: 0.1,
+        }.get(tradeability_trend, 0.1)
+        components.append(IgnitionComponent(
+            name="tradeability",
+            value=tradeability_score,
+            normalized=tradeability_score,
+            weight=COMPOSITE_WEIGHTS["tradeability"],
+            evidence_refs=[]
+        ))
+        
+        # 6. Rotation (5%)
+        rotation_score = 0.0
+        if rotation and rotation.rotation_confidence > 0:
+            rotation_score = min(rotation.rotation_confidence / 2.0, 1.0)
+        components.append(IgnitionComponent(
+            name="rotation",
+            value=rotation_score,
+            normalized=rotation_score,
+            weight=COMPOSITE_WEIGHTS["rotation"],
+            evidence_refs=[rotation.source_token] if rotation else []
+        ))
+        
+        # 7. Reawakening (5%)
+        reawakening_score = {
+            ReawakeningState.REAWAKENING: 1.0,
+            ReawakeningState.WAKING: 0.6,
+            ReawakeningState.ACTIVE: 0.4,
+            ReawakeningState.DORMANT: 0.0,
+        }.get(reawakening, 0.0)
+        components.append(IgnitionComponent(
+            name="reawakening",
+            value=reawakening_score,
+            normalized=reawakening_score,
+            weight=COMPOSITE_WEIGHTS["reawakening"],
+            evidence_refs=[]
+        ))
+        
+        # === VOLUME FRESHNESS (40% penalty) ===
+        
+        # Check if volume is already saturated
+        recent_vol = metrics_15s.gross_buy_flow + metrics_15s.gross_sell_flow
+        # Use 5m as longest window for baseline
+        baseline_vol = metrics_5m.gross_buy_flow + metrics_5m.gross_sell_flow
+        
+        if baseline_vol > 0:
+            volume_ratio = recent_vol / (baseline_vol / 8)  # Normalize to same window
+        else:
+            volume_ratio = 0.0
+        
+        # Determine saturation state
+        if volume_ratio < 2.0:
+            saturation = VolumeSaturation.BEFORE_VOLUME
+            volume_freshness = 1.0
+        elif volume_ratio < 5.0:
+            saturation = VolumeSaturation.VOLUME_EXPANDING
+            volume_freshness = 0.5
+        else:
+            saturation = VolumeSaturation.ALREADY_CROWDED
+            volume_freshness = 0.1
+        
+        # Calculate weighted score
+        weighted_score = sum(c.normalized * c.weight for c in components)
+        
+        # Apply volume freshness penalty
+        final_score = weighted_score * volume_freshness * 100
+        
+        # Calculate confidence based on data quality
+        confidence_components = [
+            novel_cap_normalized,
+            buyer_accel_normalized,
+            quality / 100,
+            1.0 if metrics_15s.independence_confidence != "UNKNOWN" else 0.3,
+        ]
+        confidence = sum(confidence_components) / len(confidence_components) * 100
+        
+        # Determine state
+        if final_score < 20:
+            state = SignalState.QUIET
+        elif final_score < 40:
+            state = SignalState.FORMING
+        elif final_score < 70:
+            state = SignalState.IGNITION
+        elif final_score < 85:
+            state = SignalState.ACCELERATING
+        elif saturation == VolumeSaturation.ALREADY_CROWDED:
+            state = SignalState.SATURATED
+        else:
+            state = SignalState.ACCELERATING
+        
+        # Generate WHY NOW
+        why_parts = []
+        if novel_cap > 1000:
+            why_parts.append(f"novel capital +${novel_cap:.0f}")
+        if metrics_15s.estimated_independent_buyers > 3:
+            why_parts.append(f"{metrics_15s.estimated_independent_buyers} independent buyers")
+        if quality > 50:
+            why_parts.append(f"buyer quality {quality:.0f}")
+        if rotation and rotation.rotation_confidence > 0.5:
+            why_parts.append("rotation in")
+        if tradeability_trend in [TradeabilityTrend.IMPROVING, TradeabilityTrend.RAPIDLY_IMPROVING]:
+            why_parts.append("tradeability improving")
+        if reawakening == ReawakeningState.REAWAKENING:
+            why_parts.append("reawakening detected")
+        
+        why_now = ", ".join(why_parts) if why_parts else "insufficient signals"
+        
+        return CompositeIgnitionScore(
+            token_address=token,
+            score=final_score,
+            confidence=confidence,
+            state=state,
+            saturation=saturation,
+            components=components,
+            novel_capital_usd=novel_cap,
+            novel_capital_per_second=metrics_15s.novel_capital_per_second,
+            independent_buyer_rate=buyer_accel,
+            buyer_quality=quality,
+            recurring_actor_present=recurring,
+            tradeability_trend=tradeability_trend,
+            rotation_present=rotation is not None,
+            reawakening_state=reawakening,
+            why_now=why_now,
+            evidence_refs=[r.tx_hash for r in list(self._windows[token].get(15, []))[-5:]],
+            signal_time=now,
+            calculated_at=now,
+        )
+    
+    def get_composite_candidates(self, limit: int = 10) -> List[CompositeIgnitionScore]:
+        """Get top ignition candidates by composite score."""
+        candidates = []
+        
+        for token in self._windows.keys():
+            score = self.compute_composite_ignition(token)
+            if score.score > 20:  # Only include non-quiet
+                candidates.append(score)
+        
+        # Sort by score descending
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        return candidates[:limit]
+    
+    # === PAPER SIGNAL SNAPSHOTS ===
+    
