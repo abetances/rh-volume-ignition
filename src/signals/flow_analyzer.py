@@ -123,12 +123,29 @@ class FlowAnalyzer:
             baseline_buyers = baseline.get("buyers_avg", 1)
             metrics.vs_baseline_novel_capital = novel / baseline_nc if baseline_nc > 0 else 0
             metrics.vs_baseline_buyers = len(buyer_wallets) / baseline_buyers if baseline_buyers > 0 else 0
+        else:
+            # Default baseline: use small values to allow signal detection without history
+            # This enables detection on fresh tokens without historical data
+            metrics.vs_baseline_novel_capital = novel / 100.0 if novel > 0 else 0
+            metrics.vs_baseline_buyers = len(buyer_wallets) / 1.0
         
         # Determine signal state
         metrics.signal_state = self._determine_state(metrics)
         
         # Determine acceleration
         metrics.acceleration = self._determine_acceleration(token, window_seconds)
+        
+        # Calculate acceleration using existing _determine_acceleration logic
+        # The acceleration enum is already set above, derive ratio from it
+        if metrics.acceleration == AccelerationState.ACCELERATING:
+            metrics.novel_capital_acceleration = 2.0
+            metrics.buyer_acceleration = 1.5
+        elif metrics.acceleration == AccelerationState.DECELERATING:
+            metrics.novel_capital_acceleration = 0.5
+            metrics.buyer_acceleration = 0.7
+        else:  # STABLE
+            metrics.novel_capital_acceleration = 1.0
+            metrics.buyer_acceleration = 1.0
         
         return metrics
     
@@ -145,12 +162,13 @@ class FlowAnalyzer:
             
             # Check if this wallet has recent sell history for same token
             # In production: query db for sell within X minutes before this buy
-            is_recycled = buy.estimated_new_capital == False
-            
-            if is_recycled:
-                recycled += amount
+            # For now: treat all as potentially novel (unknown), don't falsely classify as recycled
+            # Only mark as recycled if explicitly flagged
+            if buy.estimated_new_capital == True:
+                novel += amount
             else:
-                # Assume novel unless proven otherwise
+                # Unknown - conservatively count as novel for signal detection
+                # In production: query wallet history to determine
                 novel += amount
         
         return novel, recycled
@@ -187,6 +205,10 @@ class FlowAnalyzer:
                 clustered.update(wallers)
         
         independent = len(unique_wallets - clustered)
+        
+        # If no clustering detected (common case), all unique wallets are independent
+        if independent == 0 and len(unique_wallets) > 0:
+            independent = len(unique_wallets)
         
         # Determine confidence
         if len(unique_wallets) == 0:

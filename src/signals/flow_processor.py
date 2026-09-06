@@ -30,6 +30,7 @@ class FlowProcessor:
         # Skip if already processed
         tx_hash = event.get("tx_hash", "")
         if tx_hash in self._processed_txs:
+            print(f"[PROCESSOR] Skipping duplicate: {tx_hash[:16]}...")
             return None
         
         self._processed_txs.add(tx_hash)
@@ -48,7 +49,8 @@ class FlowProcessor:
         event_sig = topics[0]
         
         # Handle Transfer events (most common for trading)
-        if event_sig == self._transfer_sig and len(topics) >= 4:
+        # ERC-20 Transfer has 3 topics: sig, from, to. Value is in 'data' field
+        if event_sig == self._transfer_sig and len(topics) >= 3:
             return self._parse_transfer(event, topics)
         
         return None
@@ -60,8 +62,8 @@ class FlowProcessor:
             from_addr = topics[1][-40:] if len(topics) > 1 else ""  # Last 20 bytes (40 hex)
             to_addr = topics[2][-40:] if len(topics) > 2 else ""    # Last 20 bytes (40 hex)
             
-            # Value is in topics[3] or data
-            value_hex = topics[3] if len(topics) > 3 else event.get("data", "0x0")
+            # Value is in data field for ERC-20 Transfer (topics has sig, from, to)
+            value_hex = event.get("data", "0x0")
             value = int(value_hex, 16) if value_hex else 0
             
             if value == 0:

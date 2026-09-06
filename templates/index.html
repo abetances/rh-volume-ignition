@@ -3,351 +3,329 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RH Volume Ignition Dashboard</title>
+    <title>RH Volume Ignition</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0d1117; color: #c9d1d9; min-height: 100vh;
         }
+        
         .header {
-            background: #161b22; padding: 16px 24px; border-bottom: 1px solid #30363d;
+            background: #161b22; padding: 12px 20px; border-bottom: 1px solid #30363d;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .header h1 { color: #58a6ff; font-size: 20px; }
+        .header h1 { color: #58a6ff; font-size: 18px; font-weight: 600; }
+        
+        .status-row { display: flex; gap: 12px; align-items: center; }
         .status-badge { 
-            padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;
+            padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
         }
         .status-live { background: #238636; color: #fff; }
         .status-waiting { background: #6e7681; color: #fff; }
-        .status-error { background: #da3633; color: #fff; }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px; }
-        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; padding: 0 16px 16px; }
+        /* Compact Health Bar */
+        .health-bar {
+            display: flex; gap: 1px; background: #30363d;
+        }
+        .health-item {
+            flex: 1; background: #161b22; padding: 8px 12px; text-align: center;
+        }
+        .health-label { font-size: 9px; color: #6e7681; text-transform: uppercase; }
+        .health-value { font-size: 14px; font-weight: 600; color: #fff; }
+        .health-item.good .health-value { color: #3fb950; }
+        .health-item.warn .health-value { color: #d29922; }
+        .health-item.bad .health-value { color: #f85149; }
         
-        .card {
+        /* Main Content */
+        .main { padding: 16px; }
+        
+        .section-title {
+            font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 0.5px;
+            margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;
+        }
+        .section-title .count { 
+            background: #30363d; padding: 2px 8px; border-radius: 10px; font-size: 10px;
+        }
+        
+        /* Candidates Grid */
+        .candidates { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+        
+        .candidate {
             background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
+            border-left: 3px solid #f85149;
         }
-        .card-title { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-        .card-value { font-size: 24px; font-weight: 700; color: #fff; }
-        .card-sub { font-size: 10px; color: #8b949e; margin-top: 2px; }
+        .candidate.ignition { border-left-color: #f85149; }
+        .candidate.accelerating { border-left-color: #d29922; }
+        .candidate.forming { border-left-color: #58a6ff; }
         
-        .card.good .card-value { color: #3fb950; }
-        .card.warn .card-value { color: #d29922; }
-        .card.bad .card-value { color: #f85149; }
-        
-        .section { padding: 0 16px 16px; }
-        .section-title { font-size: 13px; color: #8b949e; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #30363d; }
-        
-        .feed { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
-        .feed-item {
-            background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px;
-            display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+        .candidate-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
         }
-        .feed-item .token { font-weight: 600; color: #fff; }
-        .feed-item .metric { color: #8b949e; font-size: 11px; }
-        
-        .logs { 
-            background: #0d1117; border: 1px solid #30363d; border-radius: 6px; 
-            padding: 10px; max-height: 180px; overflow-y: auto; font-family: monospace; font-size: 10px;
+        .token-address { font-family: monospace; font-size: 12px; color: #fff; font-weight: 600; }
+        .token-state { 
+            padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600;
+            background: #f85149; color: #fff;
         }
-        .log-entry { margin-bottom: 3px; }
-        .log-time { color: #6e7681; }
-        .log-ok { color: #3fb950; }
-        .log-warn { color: #d29922; }
-        .log-err { color: #f85149; }
+        .token-state.IGNITION { background: #f85149; }
+        .token-state.ACCELERATING { background: #d29922; }
+        .token-state.FORMING { background: #58a6ff; }
         
-        .tier-bar { display: flex; gap: 4px; margin-top: 4px; }
-        .tier-pill { 
-            padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+        .candidate-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .metric { }
+        .metric-label { font-size: 9px; color: #6e7681; }
+        .metric-value { font-size: 13px; font-weight: 600; color: #fff; }
+        
+        .candidate-age { font-size: 10px; color: #6e7681; margin-top: 6px; }
+        
+        /* Collapsible Live Events */
+        .events-section { margin-top: 16px; }
+        .events-toggle {
+            background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px;
+            cursor: pointer; width: 100%; text-align: left; color: #c9d1d9; font-size: 12px;
+            display: flex; justify-content: space-between; align-items: center;
         }
-        .tier-0 { background: #f85149; color: #fff; }
-        .tier-1 { background: #d29922; color: #fff; }
-        .tier-2 { background: #58a6ff; color: #fff; }
-        .tier-3 { background: #8b949e; color: #fff; }
-        .tier-4 { background: #484f58; color: #fff; }
+        .events-toggle:hover { background: #21262d; }
+        .events-toggle .arrow { transition: transform 0.2s; }
+        .events-toggle.open .arrow { transform: rotate(90deg); }
         
-        .event-tape { display: flex; flex-direction: column; gap: 4px; }
-        .event { 
-            padding: 6px 10px; border-radius: 4px; font-size: 11px;
+        .events-content { display: none; padding-top: 10px; }
+        .events-content.open { display: block; }
+        
+        .event-item {
+            background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+            padding: 6px 10px; margin-bottom: 4px; font-size: 11px;
             display: flex; justify-content: space-between;
         }
-        .event-new { background: #238636; color: #fff; }
-        .event-spike { background: #d29922; color: #fff; }
-        .event-promote { background: #58a6ff; color: #fff; }
-        .event-re awaken { background: #a371f7; color: #fff; }
+        .event-time { color: #6e7681; font-size: 10px; }
+        
+        .empty-state {
+            text-align: center; padding: 30px; color: #6e7681;
+        }
         
         .unknown { color: #6e7681; font-style: italic; }
-        
-        .refresh-indicator {
-            position: fixed; bottom: 16px; right: 16px;
-            background: #161b22; border: 1px solid #30363d;
-            padding: 8px 12px; border-radius: 6px; font-size: 11px; color: #8b949e;
-        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>🔥 RH Volume Ignition</h1>
-        <span id="global-status" class="status-badge status-waiting">WAITING FOR DATA</span>
-    </div>
-    
-    <!-- Chain Status Row -->
-    <div class="grid">
-        <div class="card" id="card-chain">
-            <div class="card-title">Chain Status</div>
-            <div class="card-value unknown">UNKNOWN</div>
-            <div class="card-sub">Last block: --</div>
-        </div>
-        
-        <div class="card" id="card-block">
-            <div class="card-title">Last Block</div>
-            <div class="card-value unknown">--</div>
-            <div class="card-sub">Lag: --</div>
-        </div>
-        
-        <div class="card" id="card-lag">
-            <div class="card-title">Ingest Lag</div>
-            <div class="card-value unknown">--</div>
-            <div class="card-sub">ms behind head</div>
-        </div>
-        
-        <div class="card" id="card-events">
-            <div class="card-title">Events/Sec</div>
-            <div class="card-value unknown">--</div>
-            <div class="card-sub">5m avg</div>
+        <div class="status-row">
+            <span id="ignition-count" class="status-badge" style="background:#f85149;color:#fff;">0 IGNITION</span>
+            <span id="global-status" class="status-badge status-waiting">STARTING</span>
         </div>
     </div>
     
-    <!-- Tokens & Tiers Row -->
-    <div class="grid">
-        <div class="card">
-            <div class="card-title">Tokens Watched</div>
-            <div class="card-value" id="total-tokens">0</div>
-            <div class="card-sub">In universe</div>
+    <!-- Compact Health Bar -->
+    <div class="health-bar">
+        <div class="health-item" id="health-chain">
+            <div class="health-label">Chain</div>
+            <div class="health-value unknown">--</div>
+        </div>
+        <div class="health-item" id="health-lag">
+            <div class="health-label">Lag</div>
+            <div class="health-value">--</div>
+        </div>
+        <div class="health-item" id="health-eps">
+            <div class="health-label">Events/s</div>
+            <div class="health-value">--</div>
+        </div>
+        <div class="health-item" id="health-tokens">
+            <div class="health-label">Tokens</div>
+            <div class="health-value">--</div>
+        </div>
+        <div class="health-item" id="health-ignitions">
+            <div class="health-label">Ignitions</div>
+            <div class="health-value" style="color:#f85149">0</div>
+        </div>
+    </div>
+    
+    <div class="main">
+        <!-- Ignition Candidates -->
+        <div class="section-title">
+            <span>Top Ignition Candidates</span>
+            <span class="count" id="candidates-count">0</span>
+        </div>
+        <div id="candidates-container">
+            <div class="empty-state">Waiting for ignition signals...</div>
         </div>
         
-        <div class="card">
-            <div class="card-title">Tier Distribution</div>
-            <div class="tier-bar">
-                <span class="tier-pill tier-0" id="tier-0">T0: 0</span>
-                <span class="tier-pill tier-1" id="tier-1">T1: 0</span>
-                <span class="tier-pill tier-2" id="tier-2">T2: 0</span>
-                <span class="tier-pill tier-3" id="tier-3">T3: 0</span>
-                <span class="tier-pill tier-4" id="tier-4">T4: 0</span>
+        <!-- Collapsible Live Events -->
+        <div class="events-section">
+            <button class="events-toggle" onclick="toggleEvents()">
+                <span>📡 Live Events</span>
+                <span class="arrow">▶</span>
+            </button>
+            <div class="events-content" id="events-content">
+                <div id="events-list"></div>
             </div>
         </div>
-        
-        <div class="card">
-            <div class="card-title">RPC Status</div>
-            <div class="card-value unknown" id="rpc-status">UNKNOWN</div>
-            <div class="card-sub" id="rpc-provider">No provider</div>
-        </div>
-        
-        <div class="card">
-            <div class="card-title">Database</div>
-            <div class="card-value" id="db-status">CONNECTED</div>
-            <div class="card-sub" id="db-type">SQLite</div>
-        </div>
-    </div>
-    
-    <!-- Event Tape -->
-    <div class="section">
-        <div class="section-title">Live Event Tape</div>
-        <div class="event-tape" id="event-tape">
-            <div class="event event-new">
-                <span>Waiting for live data...</span>
-                <span>--:--</span>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Token Feed -->
-    <div class="section">
-        <div class="section-title">Recent Token Activity</div>
-        <div class="feed" id="token-feed">
-            <div class="feed-item">
-                <span class="token">No tokens yet</span>
-                <span class="metric">Scanning chain...</span>
-            </div>
-        </div>
-    </div>
-    
-    <!-- System Logs -->
-    <div class="section">
-        <div class="section-title">System Logs</div>
-        <div class="logs" id="logs">
-            <div class="log-entry"><span class="log-time">[--:--:--]</span> <span class="log-ok">Dashboard initialized</span></div>
-        </div>
-    </div>
-    
-    <div class="refresh-indicator" id="refresh-indicator">
-        Last refresh: --:--:--
     </div>
     
     <script>
-        const LOGS = document.getElementById('logs');
+        let eventsOpen = false;
         
-        function log(msg, type = 'ok') {
-            const time = new Date().toLocaleTimeString();
-            LOGS.innerHTML = `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span></div>` + LOGS.innerHTML;
-            if (LOGS.children.length > 50) LOGS.removeChild(LOGS.lastChild);
+        function toggleEvents() {
+            eventsOpen = !eventsOpen;
+            document.querySelector('.events-toggle').classList.toggle('open', eventsOpen);
+            document.getElementById('events-content').classList.toggle('open', eventsOpen);
+            document.querySelector('.events-toggle .arrow').textContent = eventsOpen ? '▼' : '▶';
         }
         
         function formatNumber(n) {
-            if (n === 'UNKNOWN' || n === null || n === undefined || isNaN(n)) return 'UNKNOWN';
+            if (n === 'UNKNOWN' || n === null || n === undefined || isNaN(n)) return '--';
+            if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
             return new Intl.NumberFormat().format(n);
         }
         
-        function addEventTape(type, msg) {
-            const tape = document.getElementById('event-tape');
-            const time = new Date().toLocaleTimeString();
-            const eventDiv = document.createElement('div');
-            eventDiv.className = `event event-${type}`;
-            eventDiv.innerHTML = `<span>${msg}</span><span>${time}</span>`;
-            tape.insertBefore(eventDiv, tape.firstChild);
-            if (tape.children.length > 20) tape.removeChild(tape.lastChild);
+        function formatAge(ts) {
+            if (!ts) return '--';
+            const age = (Date.now() - new Date(ts).getTime()) / 1000;
+            if (age < 60) return Math.floor(age) + 's ago';
+            if (age < 3600) return Math.floor(age/60) + 'm ago';
+            return Math.floor(age/3600) + 'h ago';
         }
         
-        async function fetchStatus() {
+        async function fetchHealth() {
             try {
                 const res = await fetch('/api/v1/health');
-                if (!res.ok) throw new Error('Health endpoint returned ' + res.status);
                 const data = await res.json();
                 
-                // Chain status
-                const chainCard = document.getElementById('card-chain');
+                // Chain
+                const chainEl = document.getElementById('health-chain');
                 if (data.chain_live) {
-                    chainCard.className = 'card good';
-                    chainCard.querySelector('.card-value').textContent = 'LIVE';
-                    chainCard.querySelector('.card-sub').textContent = `Block: ${formatNumber(data.last_block)}`;
-                    document.getElementById('global-status').className = 'status-badge status-live';
-                    document.getElementById('global-status').textContent = 'LIVE';
+                    chainEl.className = 'health-item good';
+                    chainEl.querySelector('.health-value').textContent = 'LIVE';
                 } else {
-                    chainCard.className = 'card warn';
-                    chainCard.querySelector('.card-value').textContent = 'OFFLINE';
-                    chainCard.querySelector('.card-sub').textContent = 'No chain data';
-                    document.getElementById('global-status').className = 'status-badge status-waiting';
-                    document.getElementById('global-status').textContent = 'OFFLINE';
+                    chainEl.className = 'health-item bad';
+                    chainEl.querySelector('.health-value').textContent = 'OFFLINE';
                 }
                 
-                // Last block
-                document.getElementById('card-block').querySelector('.card-value').textContent = formatNumber(data.last_block);
-                document.getElementById('card-block').querySelector('.card-sub').textContent = `Lag: ${data.ingest_lag_ms}ms`;
-                
-                // Ingest lag
-                const lagCard = document.getElementById('card-lag');
+                // Lag
+                const lagEl = document.getElementById('health-lag');
                 const lag = data.ingest_lag_ms || 0;
-                if (lag < 5000) {
-                    lagCard.className = 'card good';
-                } else if (lag < 30000) {
-                    lagCard.className = 'card warn';
-                } else {
-                    lagCard.className = 'card bad';
-                }
-                lagCard.querySelector('.card-value').textContent = lag + 'ms';
+                lagEl.className = lag < 5000 ? 'health-item good' : (lag < 30000 ? 'health-item warn' : 'health-item bad');
+                lagEl.querySelector('.health-value').textContent = lag + 'ms';
                 
-                // Events per sec
+                // EPS
+                const epsEl = document.getElementById('health-eps');
                 const eps = data.events_per_sec || 0;
-                const epsCard = document.getElementById('card-events');
-                if (eps > 0) {
-                    epsCard.className = 'card good';
-                } else {
-                    epsCard.className = 'card';
-                }
-                epsCard.querySelector('.card-value').textContent = eps.toFixed(2);
+                epsEl.className = eps > 0 ? 'health-item good' : 'health-item';
+                epsEl.querySelector('.health-value').textContent = eps.toFixed(1);
                 
                 // Tokens
-                document.getElementById('total-tokens').textContent = formatNumber(data.total_tokens || 0);
+                document.getElementById('health-tokens').querySelector('.health-value').textContent = 
+                    formatNumber(data.total_tokens || 0);
                 
-                // Tiers
-                const tiers = data.tier_counts || {};
-                document.getElementById('tier-0').textContent = `T0: ${tiers[0] || 0}`;
-                document.getElementById('tier-1').textContent = `T1: ${tiers[1] || 0}`;
-                document.getElementById('tier-2').textContent = `T2: ${tiers[2] || 0}`;
-                document.getElementById('tier-3').textContent = `T3: ${tiers[3] || 0}`;
-                document.getElementById('tier-4').textContent = `T4: ${tiers[4] || 0}`;
-                
-                // RPC status
-                const rpcCard = document.getElementById('rpc-status');
-                if (data.rpc_connected) {
-                    rpcCard.textContent = 'CONNECTED';
-                    rpcCard.className = 'card-value';
-                    document.getElementById('rpc-provider').textContent = data.rpc_provider || 'RH_PUBLIC_RPC';
-                } else {
-                    rpcCard.textContent = 'DISCONNECTED';
-                    document.getElementById('rpc-provider').textContent = 'No provider';
+                // Global status
+                if (data.chain_live) {
+                    document.getElementById('global-status').className = 'status-badge status-live';
+                    document.getElementById('global-status').textContent = 'LIVE';
                 }
-                
-                // DB status
-                if (data.db_connected) {
-                    document.getElementById('db-status').textContent = 'CONNECTED';
-                    document.getElementById('db-type').textContent = data.db_type || 'SQLite';
-                } else {
-                    document.getElementById('db-status').textContent = 'DISCONNECTED';
-                }
-                
-                document.getElementById('refresh-indicator').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
                 
             } catch (e) {
-                log('Status fetch failed: ' + e.message, 'err');
+                console.error('Health fetch failed:', e);
             }
         }
         
-        async function fetchTokens() {
+        async function fetchCandidates() {
             try {
-                const res = await fetch('/api/v1/tokens?limit=10');
-                if (!res.ok) return;
-                const tokens = await res.json();
+                const res = await fetch('/api/v1/signals/ignition');
+                let candidates = await res.json();
                 
-                const feed = document.getElementById('token-feed');
-                if (!tokens.length) {
-                    feed.innerHTML = '<div class="feed-item"><span class="token">No tokens detected</span><span class="metric">Scanning chain...</span></div>';
+                // Handle both array and {candidates: [...]} formats
+                if (candidates.candidates) {
+                    candidates = candidates.candidates;
+                }
+                
+                const container = document.getElementById('candidates-container');
+                const count = candidates.length;
+                
+                document.getElementById('health-ignitions').querySelector('.health-value').textContent = count;
+                document.getElementById('ignition-count').textContent = count + ' IGNITION';
+                document.getElementById('candidates-count').textContent = count;
+                
+                if (!count) {
+                    container.innerHTML = '<div class="empty-state">No ignition signals detected</div>';
                     return;
                 }
                 
-                feed.innerHTML = tokens.slice(0, 10).map(t => {
-                    const tier = t.watch_tier || 0;
-                    const tierClass = `tier-${tier}`;
+                container.innerHTML = candidates.slice(0, 8).map(c => {
+                    const state = c.signal_state || 'UNKNOWN';
+                    const stateClass = state.toLowerCase();
+                    const token = c.token_address || '';
+                    
                     return `
-                        <div class="feed-item">
-                            <span class="token">${t.token_address?.slice(0, 10)}...${t.token_address?.slice(-6)}</span>
-                            <span class="metric"><span class="tier-pill ${tierClass}">T${tier}</span> | ${t.watch_reason || 'UNKNOWN'}</span>
+                        <div class="candidate ${stateClass}">
+                            <div class="candidate-header">
+                                <span class="token-address">${token.slice(0, 8)}...${token.slice(-6)}</span>
+                                <span class="token-state ${state}">${state}</span>
+                            </div>
+                            <div class="candidate-metrics">
+                                <div class="metric">
+                                    <div class="metric-label">Novel Capital</div>
+                                    <div class="metric-value">${formatNumber(c.novel_capital_15s)}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Indep. Buyers</div>
+                                    <div class="metric-value">${c.independent_buyers_15s || '--'}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Buyer Accel.</div>
+                                    <div class="metric-value">${c.buyer_acceleration_15s?.toFixed(2) || '--'}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">vs Baseline</div>
+                                    <div class="metric-value">${c.vs_baseline?.toFixed(2) || '0'}</div>
+                                </div>
+                            </div>
+                            <div class="candidate-age">${formatAge(c.ignition_detected_at)}</div>
                         </div>
                     `;
                 }).join('');
                 
             } catch (e) {
-                log('Token fetch failed: ' + e.message, 'err');
+                console.error('Candidates fetch failed:', e);
             }
         }
         
-        async function fetchTransitions() {
+        async function fetchRecentEvents() {
             try {
-                const res = await fetch('/api/v1/transitions?limit=5');
-                if (!res.ok) return;
-                const transitions = await res.json();
+                const res = await fetch('/api/v1/tokens?limit=15');
+                const tokens = await res.json();
                 
-                if (transitions.length) {
-                    transitions.slice(0, 3).forEach(t => {
-                        addEventTape('promote', `Token ${t.token_address?.slice(0, 6)}... promoted T${t.old_tier}→T${t.new_tier}`);
-                    });
+                const container = document.getElementById('events-list');
+                if (!tokens.length) {
+                    container.innerHTML = '<div class="empty-state" style="padding:10px">No recent events</div>';
+                    return;
                 }
+                
+                container.innerHTML = tokens.slice(0, 15).map(t => {
+                    const time = t.last_event_time ? new Date(t.last_event_time).toLocaleTimeString() : '--:--';
+                    const tier = t.watch_tier ?? '--';
+                    return `
+                        <div class="event-item">
+                            <span>${(t.token_address || '').slice(0, 12)}... T${tier}</span>
+                            <span class="event-time">${time}</span>
+                        </div>
+                    `;
+                }).join('');
+                
             } catch (e) {
-                // Silently fail for transitions
+                // Silent fail for events
             }
         }
         
-        // Poll status every 3 seconds
-        setInterval(fetchStatus, 3000);
-        setInterval(fetchTokens, 10000);
-        setInterval(fetchTransitions, 15000);
+        // Poll every 3 seconds
+        setInterval(fetchHealth, 3000);
+        setInterval(fetchCandidates, 5000);
+        setInterval(fetchRecentEvents, 10000);
         
         // Initial fetch
-        fetchStatus();
-        fetchTokens();
+        fetchHealth();
+        fetchCandidates();
         
-        log('Dashboard connected to backend', 'ok');
     </script>
 </body>
 </html>

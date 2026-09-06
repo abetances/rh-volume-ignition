@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from src.models import RawEvent, WatchedToken, WatchTier, WatchReason, EventType, BudgetState
 from src.providers import get_provider_manager, ProviderManager
 from src.db import get_database, Database
+from src.signals.flow_analyzer import get_flow_analyzer
+from src.signals.flow_processor import get_flow_processor
 
 
 @dataclass
@@ -53,6 +55,26 @@ class Scanner:
         self._running = False
         self._ingest_thread: Optional[threading.Thread] = None
         self._poll_thread: Optional[threading.Thread] = None
+        
+        # Lazy-loaded flow analyzer and processor
+        self._flow_analyzer = None
+        self._flow_processor = None
+    
+    @property
+    def flow_analyzer(self):
+        """Lazy load flow analyzer."""
+        if self._flow_analyzer is None:
+            from src.signals.flow_analyzer import get_flow_analyzer
+            self._flow_analyzer = get_flow_analyzer()
+        return self._flow_analyzer
+    
+    @property
+    def flow_processor(self):
+        """Lazy load flow processor."""
+        if self._flow_processor is None:
+            from src.signals.flow_processor import get_flow_processor
+            self._flow_processor = get_flow_processor()
+        return self._flow_processor
     
     def start(self):
         """Start the scanner."""
@@ -115,6 +137,10 @@ class Scanner:
                             
                             # Update watch universe based on event
                             self._update_watch_universe(event)
+                            
+                            # Process through flow analyzer for signal detection
+                            self._process_event_for_signals(event)
+                            print(f"[SIGNAL] Processed event for signals: {event.tx_hash[:16]}...")
                 
                 # Update stats
                 self._update_stats()
@@ -124,6 +150,50 @@ class Scanner:
             except Exception as e:
                 print(f"Ingestion error: {e}")
                 time.sleep(5)
+    
+    def _process_event_for_signals(self, event):
+        """Process a raw event through the flow analyzer for signal detection."""
+        try:
+            # Extract topics from raw_reference
+            topics = []
+            data = "0x"
+            if hasattr(event, 'raw_reference') and event.raw_reference:
+                try:
+                    raw = eval(event.raw_reference) if isinstance(event.raw_reference, str) else event.raw_reference
+                    topics = raw.get('topics', [])
+                    data = raw.get('data', '0x')
+                    print(f"[SIGNAL DEBUG] Parsed raw_reference: topics={len(topics)}, data={data[:20]}...")
+                except Exception as e:
+                    print(f"[SIGNAL DEBUG] Failed to parse raw_reference: {e}")
+                    return
+            
+            if not topics:
+                print(f"[SIGNAL DEBUG] No topics for event {event.tx_hash[:16]}...")
+                return
+            
+            # Convert event to dict for processor
+            event_dict = {
+                "contract_address": event.contract_address,
+                "block_number": event.block_number,
+                "transaction_index": event.transaction_index,
+                "log_index": event.log_index,
+                "tx_hash": event.tx_hash,
+                "block_timestamp": event.block_timestamp.isoformat() if event.block_timestamp else datetime.utcnow().isoformat(),
+                "topics": topics,
+                "data": data,
+                "source": event.source,
+            }
+            
+            # Process through flow processor -> analyzer
+            flow = self.flow_processor.process_event(event_dict)
+            print(f"[SIGNAL DEBUG] Flow processor result: {flow}")
+            if flow:
+                self.flow_analyzer.ingest_trade(flow)
+                print(f"[SIGNAL] ✅ Ingested: {flow.token_address[:16]}... {flow.side} {flow.native_amount:.0f}")
+            else:
+                print(f"[SIGNAL DEBUG] Flow processor returned None")
+        except Exception as e:
+            print(f"[SIGNAL ERROR] _process_event_for_signals: {e}")
     
     def _polling_loop(self):
         """Polling loop for watch universe tokens."""

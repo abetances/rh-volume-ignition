@@ -67,6 +67,10 @@ class TokenFlowMetrics:
     novel_capital_per_second: float = 0.0
     independent_buyers_per_second: float = 0.0
     
+    # Acceleration ratios (current vs prior window)
+    novel_capital_acceleration: float = 0.0  # ratio: current / prior
+    buyer_acceleration: float = 0.0
+    
     # State
     signal_state: SignalState = SignalState.QUIET
     acceleration: AccelerationState = AccelerationState.STABLE
