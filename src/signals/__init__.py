@@ -461,6 +461,10 @@ class CompositeIgnitionScore:
     # Timestamps
     signal_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     calculated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    
+    # Velocity/acceleration metrics
+    velocity_ratio: float = 1.0  # Recent volume / prior volume (non-overlapping)
+    acceleration: float = 0.0  # Change in velocity over time
 
 
 @dataclass

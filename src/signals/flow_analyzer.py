@@ -986,26 +986,22 @@ class FlowAnalyzer:
         # === EARLY IGNITION DETECTION ===
         # Get NON-OVERLAPPING windows for velocity calculation
         # Current: last 15s, Prior: 15s-30s ago (not overlapping with current)
-        now = datetime.now(timezone.utc)
         
-        # Get all trades in the 15s window
-        trades_15s = list(self._windows[token].get(15, []))
-        if trades_15s:
-            window_end = trades_15s[-1].timestamp
-            window_start = trades_15s[0].timestamp
+        # Get all trades in the 30s window
+        all_trades = sorted(self._windows[token].get(30, []), key=lambda t: t.timestamp)
+        
+        if len(all_trades) >= 2:
+            # Split into two non-overlapping 15s periods
+            mid = len(all_trades) // 2
+            recent_trades = all_trades[mid:]  # Last half = most recent 15s
+            prior_trades = all_trades[:mid]  # First half = prior 15s
             
-            # Prior window: 15-30s before current window
-            prior_start = window_start - timedelta(seconds=15)
-            prior_end = window_start
-            
-            # Get trades from prior window
-            prior_trades = [
-                t for t in self._windows[token].get(15, [])
-                if prior_start <= t.timestamp < prior_end
-            ]
-            
-            recent_vol = sum(t.native_amount for t in trades_15s)
+            recent_vol = sum(t.native_amount for t in recent_trades)
             prior_vol = sum(t.native_amount for t in prior_trades)
+        elif all_trades:
+            # Only one trade - can't calculate velocity
+            recent_vol = sum(t.native_amount for t in all_trades)
+            prior_vol = 0
         else:
             recent_vol = metrics_15s.gross_buy_flow + metrics_15s.gross_sell_flow
             prior_vol = 0
@@ -1153,6 +1149,8 @@ class FlowAnalyzer:
             evidence_refs=[r.tx_hash for r in list(self._windows[token].get(15, []))[-5:]],
             signal_time=now,
             calculated_at=now,
+            velocity_ratio=velocity_ratio,
+            acceleration=0.0,  # TODO: calculate from history
         )
     
     def get_composite_candidates(self, limit: int = 10, min_score: float = 15.0) -> List[CompositeIgnitionScore]:
