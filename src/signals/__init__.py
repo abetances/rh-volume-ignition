@@ -2,8 +2,8 @@
 
 from enum import Enum
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, List, Dict, Set, Any
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Set, Any, Callable
 
 
 class SignalState(Enum):
@@ -68,7 +68,7 @@ class TradeFlow:
     tx_index: int = 0
     log_index: int = 0
     tx_hash: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     source: str = "unknown"
     
     # Inferred
@@ -113,9 +113,9 @@ class TokenFlowMetrics:
     vs_baseline_buyers: float = 0.0
     
     # Timestamps
-    window_start: datetime = field(default_factory=datetime.utcnow)
-    window_end: datetime = field(default_factory=datetime.utcnow)
-    calculated_at: datetime = field(default_factory=datetime.utcnow)
+    window_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    window_end: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    calculated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     
     # Evidence
     unique_wallets: Set[str] = field(default_factory=set)
@@ -145,7 +145,7 @@ class AccelerationWindow:
     buyer_acceleration: float = 0.0
     
     # Timestamp
-    window_end: datetime = field(default_factory=datetime.utcnow)
+    window_end: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
 
 
 @dataclass
@@ -183,8 +183,8 @@ class IgnitionCandidate:
     vs_baseline: float = 0.0
     
     # Evidence
-    first_seen: datetime = field(default_factory=datetime.utcnow)
-    ignition_detected_at: datetime = field(default_factory=datetime.utcnow)
+    first_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    ignition_detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     
     # Reference
     flow_metrics: Optional[TokenFlowMetrics] = None
@@ -232,8 +232,8 @@ class WalletCluster:
     members: List[str] = field(default_factory=list)
     total_volume: float = 0.0
     trade_count: int = 0
-    first_seen: datetime = field(default_factory=datetime.utcnow)
-    last_activity: datetime = field(default_factory=datetime.utcnow)
+    first_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
+    last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     
     # Evidence
     same_block_entries: int = 0
@@ -274,7 +274,7 @@ class LiquidityMetrics:
     sell_impact_bps: int = 0
     
     # Timestamps
-    calculated_at: datetime = field(default_factory=datetime.utcnow)
+    calculated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     data_age_seconds: float = 0.0
     
     # Confidence
@@ -302,7 +302,7 @@ class LiquidityWindow:
     exit_capacity_change_pct: float = 0.0
     
     # Timestamp
-    window_end: datetime = field(default_factory=datetime.utcnow)
+    window_end: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
 
 
 @dataclass
@@ -329,7 +329,7 @@ class ReawakeningEvent:
     depth_current: float = 0.0
     
     # Timing
-    observed_at: datetime = field(default_factory=datetime.utcnow)
+    observed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     prior_activity_at: Optional[datetime] = None
     
     # Signal combination
@@ -379,7 +379,7 @@ class RotationCandidate:
     prior_runner_hours_ago: float = 0.0
     
     # Timestamps
-    detected_at: datetime = field(default_factory=datetime.utcnow)
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc)) # type: ignore
     why_now: str = ""
 
 # Signal state thresholds (to be tuned from real data)

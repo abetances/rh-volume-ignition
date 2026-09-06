@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, timezone
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict, deque
 from dataclasses import asdict
@@ -337,7 +337,7 @@ class FlowAnalyzer:
                     "token": token,
                     "old_state": prior_state.value,
                     "new_state": current_state.value,
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "metrics": asdict(metrics)
                 })
         
@@ -419,7 +419,7 @@ class FlowAnalyzer:
             lw = self._liquidity_windows[token][window_seconds]
             prior_depth = lw.depth_native
             lw.depth_native = depth
-            lw.window_end = datetime.utcnow()
+            lw.window_end = datetime.now(timezone.utc)
             
             # Calculate change
             if prior_depth > 0:
@@ -469,7 +469,7 @@ class FlowAnalyzer:
     
     def _check_reawakening(self, token: str):
         """Check if a token is reawakening from dormancy."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Update last activity
         if token not in self._last_activity:
@@ -562,7 +562,7 @@ class FlowAnalyzer:
                 last_act = self._last_activity.get(token)
                 prior_hours = 0.0
                 if last_act:
-                    prior_hours = (datetime.utcnow() - last_act).total_seconds() / 3600
+                    prior_hours = (datetime.now(timezone.utc) - last_act).total_seconds() / 3600
                 
                 active.append({
                     "token_address": token,
@@ -789,6 +789,9 @@ class FlowAnalyzer:
         # Check if source was a runner
         if source in self._token_last_runner:
             runner_time = self._token_last_runner[source]
+            # Ensure timezone-aware
+            if runner_time.tzinfo is None:
+                runner_time = runner_time.replace(tzinfo=timezone.utc)
             hours_ago = (now - runner_time).total_seconds() / 3600
             max_hours = self.thresholds.get("prior_runner_hours", 24)
             
@@ -801,6 +804,9 @@ class FlowAnalyzer:
         # Check if source had ignition
         if source in self._token_last_ignition:
             ignition_time = self._token_last_ignition[source]
+            # Ensure timezone-aware
+            if ignition_time.tzinfo is None:
+                ignition_time = ignition_time.replace(tzinfo=timezone.utc)
             hours_ago = (now - ignition_time).total_seconds() / 3600
             max_hours = self.thresholds.get("prior_ignition_hours", 6)
             
