@@ -317,11 +317,14 @@ class FlowProcessor:
     
     def _tradeflow_from_decoded(self, decoded: DecodedTrade) -> TradeFlow:
         """Convert DecodedTrade to TradeFlow."""
+        # Normalize native_amount (assume 18 decimals for ETH/ERC20)
+        normalized_amount = decoded.native_amount / 1e18 if decoded.native_amount else 0
+        
         return TradeFlow(
             token_address=decoded.token_address,
             wallet=decoded.trader,
             side=decoded.side,
-            native_amount=decoded.native_amount,
+            native_amount=normalized_amount,
             usd_value=decoded.usd_value,
             tx_hash=decoded.tx_hash,
             timestamp=decoded.timestamp or datetime.now(timezone.utc),

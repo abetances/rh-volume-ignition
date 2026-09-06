@@ -63,7 +63,7 @@ def main():
             "observed_at": observed_at,
             "block_timestamp": block_ts,
             "source": source,
-            "contract_address": contract,
+            "contract_address": ref_data.get("address", contract),
             "event_type": event_type,
             "topics": ref_data.get("topics", []),
             "data": ref_data.get("data", "0x0"),

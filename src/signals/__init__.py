@@ -556,6 +556,10 @@ class OutcomeClassification(Enum):
     IMMEDIATE_FADE = "IMMEDIATE_FADE"
 
 
+# Model version for forward validation
+MODEL_VERSION = "v1.0"
+MODEL_CREATED_AT = "2026-09-05"
+
 # Composite score weights (tunable)
 COMPOSITE_WEIGHTS = {
     # Primary (40% total)

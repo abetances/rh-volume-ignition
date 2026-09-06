@@ -983,27 +983,25 @@ class FlowAnalyzer:
         # Use 5m as longest window for baseline
         baseline_vol = metrics_5m.gross_buy_flow + metrics_5m.gross_sell_flow
         
-        if baseline_vol > 0:
-            volume_ratio = recent_vol / (baseline_vol / 8)  # Normalize to same window
-        else:
-            volume_ratio = 0.0
-        
-        # Determine saturation state
-        if volume_ratio < 2.0:
+        # Determine saturation state based on absolute volume
+        # Low volume (< 1 ETH) = BEFORE_VOLUME (no saturation yet)
+        # Medium volume (1-10 ETH) = VOLUME_EXPANDING  
+        # High volume (> 10 ETH) = ALREADY_CROWDED
+        if recent_vol < 1.0:
             saturation = VolumeSaturation.BEFORE_VOLUME
             volume_freshness = 1.0
-        elif volume_ratio < 5.0:
+        elif recent_vol < 10.0:
             saturation = VolumeSaturation.VOLUME_EXPANDING
-            volume_freshness = 0.5
+            volume_freshness = 0.7
         else:
             saturation = VolumeSaturation.ALREADY_CROWDED
-            volume_freshness = 0.1
+            volume_freshness = 0.4
         
         # Calculate weighted score
         weighted_score = sum(c.normalized * c.weight for c in components)
         
-        # Apply volume freshness penalty
-        final_score = weighted_score * volume_freshness * 100
+        # Apply volume freshness penalty (less aggressive)
+        final_score = weighted_score * (0.5 + volume_freshness * 0.5) * 100
         
         # Calculate confidence based on data quality
         confidence_components = [
