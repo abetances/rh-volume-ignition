@@ -247,8 +247,8 @@ class Scanner:
                 entry_volume=flow.native_amount,
             )
             
-            # Execute entry if score is high enough (bypass strict state check for now)
-            if decision.ignition_score >= 20 and token not in self.paper_engine.positions:
+            # Execute entry if score >= 15 (lowered for more opportunities)
+            if decision.ignition_score >= 15 and token not in self.paper_engine.positions:
                 # Actually enter the position
                 position = self.paper_engine._enter_paper_position(
                     decision=decision,
