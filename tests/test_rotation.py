@@ -63,12 +63,12 @@ class TestRotationDetection:
         # Check rotation detected
         candidates = analyzer.get_rotation_candidates(limit=10)
 
-        # Should have at least one rotation candidate for TokenB
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        # Should have at least one rotation candidate (stored lowercase)
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
         assert len(tokenb_rotations) > 0, "Rotation not detected"
 
         rotation = tokenb_rotations[0]
-        assert rotation.source_token == "TokenA"
+        assert rotation.source_token.lower() == "tokena"
         assert rotation.actor_id == "actor123"
         assert rotation.rotation_state in [RotationState.POSSIBLE_ROTATION,
                                           RotationState.PROBABLE_ROTATION,
@@ -110,7 +110,7 @@ class TestRotationDetection:
 
         # Check no rotation detected
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
         assert len(tokenb_rotations) == 0, "False rotation detected for unrelated trades"
 
     def test_internal_cluster_transfer_rejected(self, analyzer):
@@ -120,8 +120,7 @@ class TestRotationDetection:
         # Create a wallet cluster
         cluster = WalletCluster(
             cluster_id="cluster_1",
-            member_wallets=["wallet1", "wallet2", "wallet3"],
-            cluster_type="deployer_related",
+            members=["wallet1", "wallet2", "wallet3"],
             first_seen=now_ts - timedelta(days=30)
         )
         analyzer._wallet_clusters["wallet1"] = cluster
@@ -162,7 +161,7 @@ class TestRotationDetection:
         candidates = analyzer.get_rotation_candidates(limit=10)
         # Internal cluster transfers should have lower confidence or be rejected
         for c in candidates:
-            if c.token_address == "TokenB":
+            if c.token_address.lower() == "tokenb":
                 # Should be rejected or have very low confidence
                 assert c.rotation_confidence < 0.5 or c.rotation_state == RotationState.REJECTED
 
@@ -202,7 +201,7 @@ class TestRotationDetection:
 
         # Check no rotation detected (dust rejected)
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
         assert len(tokenb_rotations) == 0, "Dust flow should be rejected"
 
     def test_prior_runner_weighting(self, analyzer):
@@ -210,7 +209,7 @@ class TestRotationDetection:
         now_ts = now()
 
         # Mark TokenA as a recent runner (within 24h)
-        analyzer._token_last_runner["tokenA"] = now_ts - timedelta(hours=12)
+        analyzer._token_last_runner["tokena"] = now_ts - timedelta(hours=12)
 
         # Actor sells Token A
         sell_flow = TradeFlow(
@@ -244,7 +243,7 @@ class TestRotationDetection:
 
         # Check rotation has prior runner flag
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
         assert len(tokenb_rotations) > 0
 
         rotation = tokenb_rotations[0]
@@ -303,7 +302,7 @@ class TestRotationDetection:
 
         # Check that rotation candidate has follow-through data
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
         assert len(tokenb_rotations) > 0
 
         rotation = tokenb_rotations[0]
@@ -345,7 +344,7 @@ class TestRotationDetection:
 
         # Check rotation state
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
 
         if len(tokenb_rotations) > 0:
             rotation = tokenb_rotations[0]
@@ -388,7 +387,7 @@ class TestRotationDetection:
         analyzer.ingest_trade(buy_flow)
 
         candidates = analyzer.get_rotation_candidates(limit=10)
-        tokenb_rotations = [c for c in candidates if c.token_address == "TokenB"]
+        tokenb_rotations = [c for c in candidates if c.token_address.lower() == "tokenb"]
 
         if len(tokenb_rotations) > 0:
             rotation = tokenb_rotations[0]

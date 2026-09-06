@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict, deque
 from dataclasses import asdict
@@ -784,7 +784,7 @@ class FlowAnalyzer:
     def _check_prior_runner(self, candidate: RotationCandidate):
         """Check if source token was a prior runner/ignition."""
         source = candidate.source_token
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Check if source was a runner
         if source in self._token_last_runner:
