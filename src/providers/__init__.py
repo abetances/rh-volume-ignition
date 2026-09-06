@@ -140,6 +140,11 @@ class ProviderManager:
         fallback_url = os.getenv("FALLBACK_RPC_URL", "").strip()
         if fallback_url:
             self.providers["FALLBACK_RPC"] = RPCProvider("FALLBACK_RPC", fallback_url, is_public=True)
+        
+        # Alchemy RPC (free tier: 10-block max for eth_getLogs)
+        alchemy_url = os.getenv("ALCHEMY_RH_URL", "").strip()
+        if alchemy_url:
+            self.providers["ALCHEMY_RH"] = RPCProvider("ALCHEMY_RH", alchemy_url, is_public=True)
     
     def _record_request(self, provider_name: str, latency_ms: float, success: bool, 
                        is_rate_limited: bool = False):

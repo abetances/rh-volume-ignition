@@ -15,13 +15,11 @@ TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3
 UNISWAP_V3_SWAP_SIG = "0x205442d60b70af1203d43cab62352c3b69b94f091be32fe683198057282b5c92"
 
 # Known router/pool addresses (Base chain - common prefixes)
-# In production, these would be fetched from DEX factories
 KNOWN_ROUTERS = {
-    "0xa0aeba6d88f3d77bd3d2d8e3f3e7e8c8e3e7e8c",  # Uniswap V3 Router
-    "0x3fc91a3afd70395cd496c647d5a6cc9d4ceb2e89",  # Uniswap V3
-    "0xe592427a0aece92de3edee1f18e0157c05861564",  # Uniswap V3 Router
-    "0xcb1355ff08ab38e0950d5d5314ec202c5d1cbe44",  # Universal Router
-    "0x8b1bd6b3a5f7e3e7e3e7e3e7e3e7e3e7e3e7e",  # Camelot
+    "0xa0aeba6d88f3d77bd3d2d8e3f3e7e8c8e3e7e8c",
+    "0x3fc91a3afd70395cd496c647d5a6cc9d4ceb2e89",
+    "0xe592427a0aece92de3edee1f18e0157c05861564",
+    "0xcb1355ff08ab38e0950d5d5314ec202c5d1cbe44",
 }
 
 # Zero address (mint/burn)
@@ -42,7 +40,7 @@ class DecodedTrade:
     log_index: int = 0
     timestamp: Optional[datetime] = None
     source: str = "unknown"
-    protocol: str = "unknown"  # "uniswap_v3", "transfer", "unknown"
+    protocol: str = "unknown"
 
 
 class FlowProcessor:
@@ -74,12 +72,6 @@ class FlowProcessor:
             return None
         
         self._processed_txs.add(tx_hash)
-        
-        # Extract common fields
-        contract = event.get("contract_address", "").lower()
-        block = event.get("block_number", 0)
-        tx_index = event.get("transaction_index", 0)
-        log_index = event.get("log_index", 0)
         
         topics = event.get("topics", [])
         if not topics:
@@ -114,10 +106,9 @@ class FlowProcessor:
         Topics[1]: sender (the router/pool)
         Topics[2]: recipient (the trader)
         
-        Data encodes: amount0, amount1, sqrtPriceX96, liquidity, tick
-        For V3: amount0 is token0, amount1 is token1
-        If amount0 < 0: SELL (token0 out, token1 in)
-        If amount0 > 0: BUY (token0 in, token1 out)
+        Data: amount0, amount1, sqrtPriceX96, liquidity, tick
+        If amount0 < 0: SELL (token0 out)
+        If amount0 > 0: BUY (token0 in)
         """
         try:
             if len(topics) < 3:
@@ -126,33 +117,30 @@ class FlowProcessor:
             sender = topics[1][-40:] if len(topics) > 1 else ""
             recipient = topics[2][-40:] if len(topics) > 2 else ""
             
-            # Parse data field - contains signed amounts
             data = event.get("data", "0x")
-            if len(data) < 66:  # Need at least 2 * 32 bytes
+            if not data or len(data) < 66:
                 return None
             
-            # amount0 is first 32 bytes, amount1 is second 32 bytes
-            # These are signed integers (negative = sold, positive = bought)
-            amount0 = int(data[2:66], 16) if len(data) > 66 else 0
-            amount1 = int(data[66:130], 16) if len(data) > 130 else 0
+            # Parse amount0 (first 32 bytes) - signed int256
+            amount0_hex = data[2:66]
+            amount0 = int(amount0_hex, 16)
+            if amount0 >= 2**255:
+                amount0 -= 2**256
             
-            # Get token addresses
-            contract = event.get("contract_address", "").lower()
+            # Parse amount1 (second 32 bytes)
+            amount1 = 0
+            if len(data) >= 130:
+                amount1_hex = data[66:130]
+                amount1 = int(amount1_hex, 16)
+                if amount1 >= 2**255:
+                    amount1 -= 2**256
             
-            # Determine direction based on amount signs
-            # In V3: amount0 < 0 means token0 was sold (received by pool)
-            # amount0 > 0 means token0 was bought (sent to pool)
-            # Same logic applies to amount1
-            
-            # Use the token being traded (contract address)
-            # If amount0 is negative, trader SOLD token0
-            # If amount0 is positive, trader BOUGHT token0
-            
-            # The recipient receives the output token
+            # Determine trader and direction
             trader = "0x" + recipient if recipient else "0x" + sender
             
-            # Determine side: if amount0 is negative, sold; if positive, bought
-            # We need to know which token is the one we're tracking
+            # Determine side based on amount signs
+            # amount0 is token0, amount1 is token1
+            # Negative = sold to pool, Positive = bought from pool
             if amount0 < 0:
                 side = "SELL"
                 native_amount = abs(amount0)
@@ -164,20 +152,19 @@ class FlowProcessor:
                 native_amount = abs(amount1)
             else:
                 side = "BUY"
-                native_amount = amount1
+                native_amount = amount1 if amount1 > 0 else 0
             
-            # Parse timestamp
             timestamp = self._parse_timestamp(event.get("block_timestamp"))
             
             return DecodedTrade(
-                token_address=contract,
+                token_address=event.get("contract_address", "").lower(),
                 trader=trader,
                 side=side,
-                native_amount=float(native_amount),
+                native_amount=native_amount,
                 tx_hash=event.get("tx_hash", ""),
-                block=block,
-                tx_index=tx_index,
-                log_index=log_index,
+                block=event.get("block_number", 0),
+                tx_index=event.get("transaction_index", 0),
+                log_index=event.get("log_index", 0),
                 timestamp=timestamp,
                 source=event.get("source", "unknown"),
                 protocol="uniswap_v3",
@@ -191,8 +178,12 @@ class FlowProcessor:
         """
         Parse ERC-20 Transfer event.
         
-        This is less reliable than swap events for direction detection.
-        We use heuristics but mark as uncertain.
+        Heuristics for direction:
+        - Mint (from = zero): BUY
+        - Burn (to = zero): SELL
+        - To pool: SELL
+        - From pool: BUY
+        - Default: BUY
         """
         try:
             if len(topics) < 3:
@@ -210,41 +201,32 @@ class FlowProcessor:
             if value == 0:
                 return None
             
-            contract = event.get("contract_address", "").lower()
-            
-            # Parse timestamp
-            timestamp = self._parse_timestamp(event.get("block_timestamp"))
-            
             # Heuristics for direction
-            # 1. Mint: from = zero address -> BUY (new tokens created)
-            # 2. Burn: to = zero address -> SELL (tokens destroyed)
-            # 3. Pool transfer: one address is known router -> use that
-            # 4. Default: treat as BUY (most tokens go to holders)
-            
             if from_addr == ZERO_ADDR:
-                # Mint - new tokens created, treat as BUY
+                # Mint - new tokens created
                 side = "BUY"
                 trader = "0x" + to_addr
             elif to_addr == ZERO_ADDR:
-                # Burn - tokens destroyed, treat as SELL
+                # Burn - tokens destroyed
                 side = "SELL"
                 trader = "0x" + from_addr
             elif self._is_likely_pool(to_addr):
-                # Token going to pool -> SELL (trader sells for liquidity)
+                # Token going to pool -> SELL
                 side = "SELL"
                 trader = "0x" + from_addr
             elif self._is_likely_pool(from_addr):
-                # Token coming from pool -> BUY (trader buys with ETH)
+                # Token coming from pool -> BUY
                 side = "BUY"
                 trader = "0x" + to_addr
             else:
-                # Unclear - default to BUY (most transfers are to holders)
-                # Mark with lower confidence by using different thresholds later
+                # Default: BUY (most transfers are to holders)
                 side = "BUY"
                 trader = "0x" + to_addr
             
+            timestamp = self._parse_timestamp(event.get("block_timestamp"))
+            
             return DecodedTrade(
-                token_address=contract,
+                token_address=event.get("contract_address", "").lower(),
                 trader=trader,
                 side=side,
                 native_amount=float(value),
@@ -266,17 +248,10 @@ class FlowProcessor:
         if not addr or len(addr) < 40:
             return False
         
-        # Check against known routers
         if addr in KNOWN_ROUTERS:
             return True
         
-        # Common pool patterns on Base:
-        # - Start with 0x0 (very common for deployed pools)
-        # - Start with 0x4 (another common prefix)
-        # - Have specific suffix patterns (less reliable)
-        
-        # Be conservative - only flag obvious pools
-        # In production, would query DEX factories
+        # Conservative: only flag obvious pool prefixes
         return addr.startswith(('0x0', '0x1', '0x2', '0x3', '0x4')) and len(addr) == 40
     
     def _parse_timestamp(self, ts_value) -> Optional[datetime]:
@@ -285,25 +260,19 @@ class FlowProcessor:
             return datetime.now(timezone.utc)
         
         try:
-            # Handle hex string (Unix seconds)
             if isinstance(ts_value, str) and ts_value.startswith('0x'):
                 ts_int = int(ts_value, 16)
                 return datetime.fromtimestamp(ts_int, tz=timezone.utc)
             
-            # Handle integer
             if isinstance(ts_value, int):
                 return datetime.fromtimestamp(ts_value, tz=timezone.utc)
             
-            # Handle string
             if isinstance(ts_value, str):
-                # Try hex
                 if ts_value.startswith('0x'):
                     ts_int = int(ts_value, 16)
                     return datetime.fromtimestamp(ts_int, tz=timezone.utc)
-                # Try ISO
                 if 'T' in ts_value:
                     return datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
-                # Try Unix
                 try:
                     ts_int = int(ts_value)
                     return datetime.fromtimestamp(ts_int, tz=timezone.utc)
@@ -354,5 +323,12 @@ class FlowProcessor:
         self._processed_txs.clear()
 
 
-# Export for backwards compatibility
-__all__ = ['FlowProcessor', 'DecodedTrade']
+# === SINGLETON ACCESSORS ===
+_flow_processor_instance = None
+
+def get_flow_processor() -> FlowProcessor:
+    """Get singleton FlowProcessor instance."""
+    global _flow_processor_instance
+    if _flow_processor_instance is None:
+        _flow_processor_instance = FlowProcessor()
+    return _flow_processor_instance
