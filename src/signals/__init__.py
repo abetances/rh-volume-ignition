@@ -560,6 +560,19 @@ class OutcomeClassification(Enum):
 MODEL_VERSION = "v1.0"
 MODEL_CREATED_AT = "2026-09-05"
 
+# Forward validation results (checkpoint-07)
+VALIDATION_SAMPLE_SIZE = 30000
+VALIDATION_SIGNALS = 1059
+VALIDATION_HIT_RATE = None  # Measurement pending
+
+# Production thresholds (selected after checkpoint-07)
+IGNITION_THRESHOLD = 15.0  # Minimum score for FORMING
+IGNITION_THRESHOLD_HIGH = 25.0  # Minimum score for IGNITION state
+CONFIDENCE_THRESHOLD = 60.0  # Minimum confidence for high-priority alert
+
+# Alert cooldown to prevent spam (seconds)
+ALERT_COOLDOWN_SECONDS = 300  # 5 minutes
+
 # Composite score weights (tunable)
 COMPOSITE_WEIGHTS = {
     # Primary (40% total)

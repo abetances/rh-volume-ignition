@@ -167,6 +167,33 @@
             <div class="empty-state">No rotations detected</div>
         </div>
         
+        <!-- Performance Panel -->
+        <div class="section-title" style="margin-top:16px;">
+            <span>📊 Performance</span>
+        </div>
+        <div class="health-bar" style="margin-top:8px;">
+            <div class="health-item">
+                <div class="health-label">IGNITIONS</div>
+                <div class="health-value" id="perf-ignitions">0</div>
+            </div>
+            <div class="health-item">
+                <div class="health-label">HIT RATE</div>
+                <div class="health-value" id="perf-hitrate">--</div>
+            </div>
+            <div class="health-item">
+                <div class="health-label">FALSE POS</div>
+                <div class="health-value" id="perf-falsepos">0</div>
+            </div>
+            <div class="health-item">
+                <div class="health-label">MISSED</div>
+                <div class="health-value" id="perf-missed">0</div>
+            </div>
+            <div class="health-item">
+                <div class="health-label">MEDIAN LEAD</div>
+                <div class="health-value" id="perf-lead">--</div>
+            </div>
+        </div>
+        
         <!-- Collapsible Live Events -->
         <div class="events-section">
             <button class="events-toggle" onclick="toggleEvents()">
@@ -337,6 +364,21 @@
             }
         }
         
+        async function fetchPerformance() {
+            try {
+                const res = await fetch('/api/v1/performance');
+                const data = await res.json();
+                
+                document.getElementById('perf-ignitions').textContent = data.ignitions_today || 0;
+                document.getElementById('perf-hitrate').textContent = data.validation_hit_rate ? data.validation_hit_rate.toFixed(1) + '%' : '--';
+                document.getElementById('perf-falsepos').textContent = data.false_positives || 0;
+                document.getElementById('perf-missed').textContent = data.missed_moves || 0;
+                document.getElementById('perf-lead').textContent = data.median_lead_seconds ? data.median_lead_seconds + 's' : '--';
+            } catch (e) {
+                console.error('Performance fetch failed:', e);
+            }
+        }
+        
         async function fetchReawakenings() {
             try {
                 const res = await fetch('/api/v1/signals/reawakenings');
@@ -450,11 +492,13 @@
         setInterval(fetchRotations, 5000);
         setInterval(fetchReawakenings, 5000);
         setInterval(fetchRecentEvents, 10000);
+        setInterval(fetchPerformance, 30000);
         
         // Initial fetch
         fetchHealth();
         fetchCandidates();
         fetchRotations();
+        fetchPerformance();
         fetchReawakenings();
         
     </script>

@@ -16,7 +16,8 @@ from src.signals import (
     WINDOWS, LIQUIDITY_WINDOWS, DEFAULT_THRESHOLDS, WalletCluster,
     CompositeIgnitionScore, IgnitionComponent, VolumeSaturation,
     COMPOSITE_WEIGHTS, PaperSignalSnapshot, OutcomeCheckpoint,
-    OutcomeClassification
+    OutcomeClassification, IGNITION_THRESHOLD, IGNITION_THRESHOLD_HIGH,
+    ALERT_COOLDOWN_SECONDS
 )
 from src.db import get_database, Database
 
@@ -83,6 +84,9 @@ class FlowAnalyzer:
         
         # Paper signal snapshots (immutable)
         self._signal_snapshots: Dict[str, PaperSignalSnapshot] = {}
+        
+        # Alert cooldown tracking: token -> last alert time
+        self._last_alert_time: Dict[str, datetime] = {}
     
     def ingest_trade(self, flow: TradeFlow):
         """Ingest a single trade flow."""
@@ -1064,18 +1068,55 @@ class FlowAnalyzer:
             calculated_at=now,
         )
     
-    def get_composite_candidates(self, limit: int = 10) -> List[CompositeIgnitionScore]:
-        """Get top ignition candidates by composite score."""
+    def get_composite_candidates(self, limit: int = 10, min_score: float = 15.0) -> List[CompositeIgnitionScore]:
+        """Get top ignition candidates by composite score.
+        
+        Args:
+            limit: Maximum number of candidates to return
+            min_score: Minimum score threshold (default from IGNITION_THRESHOLD)
+        
+        Returns:
+            List of CompositeIgnitionScore objects sorted by score
+        """
         candidates = []
+        now = datetime.now(timezone.utc)
         
         for token in self._windows.keys():
             score = self.compute_composite_ignition(token)
-            if score.score > 20:  # Only include non-quiet
-                candidates.append(score)
+            
+            # Filter by minimum score
+            if score.score < min_score:
+                continue
+            
+            # Check alert cooldown
+            last_alert = self._last_alert_time.get(token)
+            if last_alert and (now - last_alert).total_seconds() < ALERT_COOLDOWN_SECONDS:
+                continue
+            
+            candidates.append(score)
         
         # Sort by score descending
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates[:limit]
+    
+    def should_alert(self, token: str, new_state: SignalState) -> bool:
+        """Check if we should send an alert for this token/state transition."""
+        now = datetime.now(timezone.utc)
+        
+        # Only alert on IGNITION or ACCELERATING states
+        if new_state not in [SignalState.IGNITION, SignalState.ACCELERATING]:
+            return False
+        
+        # Check cooldown
+        last_alert = self._last_alert_time.get(token)
+        if last_alert and (now - last_alert).total_seconds() < ALERT_COOLDOWN_SECONDS:
+            return False
+        
+        return True
+    
+    def record_alert(self, token: str):
+        """Record that an alert was sent for this token."""
+        self._last_alert_time[token] = datetime.now(timezone.utc)
     
     # === PAPER SIGNAL SNAPSHOTS ===
     

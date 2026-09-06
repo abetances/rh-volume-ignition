@@ -359,6 +359,39 @@ def token_flow(address):
         return jsonify({"error": str(e)})
 
 
+@app.route('/api/v1/performance')
+def performance_stats():
+    """Get performance statistics for forward validation."""
+    try:
+        from src.signals import (
+            MODEL_VERSION, MODEL_CREATED_AT, VALIDATION_SAMPLE_SIZE,
+            VALIDATION_SIGNALS, VALIDATION_HIT_RATE
+        )
+        
+        analyzer = get_flow_analyzer()
+        candidates = analyzer.get_composite_candidates(limit=10, min_score=15.0)
+        
+        return jsonify({
+            "model_version": MODEL_VERSION,
+            "model_created_at": MODEL_CREATED_AT,
+            "validation_sample_size": VALIDATION_SAMPLE_SIZE,
+            "validation_signals": VALIDATION_SIGNALS,
+            "validation_hit_rate": VALIDATION_HIT_RATE,
+            "ignitions_today": len([c for c in candidates if c.state.value == "IGNITION"]),
+            "forming_count": len([c for c in candidates if c.state.value == "FORMING"]),
+            "active_candidates": len(candidates),
+            "cooldown_seconds": 300,
+            "thresholds": {
+                "ignition": 15.0,
+                "ignition_high": 25.0,
+                "confidence": 60.0
+            },
+            "note": "Forward validation hit rate pending outcome measurement fix"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 def init_app():
     """Initialize the application."""
     global _scanner, _db, _providers
