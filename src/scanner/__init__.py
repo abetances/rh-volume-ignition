@@ -65,9 +65,9 @@ class Scanner:
         # Paper engine for auto-trading
         self._paper_engine = None
         self._paper_config = PaperConfig(
-            max_position_value=10000.0,  # Aggressive: $10k max per position
-            default_position_pct=0.25,   # 25% of bankroll per trade
-            min_confidence_for_entry=0.5,  # Lower threshold for more entries
+            max_position_value=100.0,    # $100 per trade
+            default_position_pct=1.0,     # Use full position value
+            min_confidence_for_entry=0.3,  # Lower threshold
             stop_loss_pct=-0.15,  # 15% stop
             max_hold_time_seconds=7200,  # 2 hours max
         )
