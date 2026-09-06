@@ -247,8 +247,10 @@ class Scanner:
                 entry_volume=flow.native_amount,
             )
             
-            # Execute entry if score >= 15 (lowered for more opportunities)
-            if decision.ignition_score >= 15 and token not in self.paper_engine.positions:
+            # Execute entry if score >= 15 and under budget limit ($1000 max = 10 positions)
+            if (decision.ignition_score >= 15 
+                and token not in self.paper_engine.positions
+                and len(self.paper_engine.positions) < 10):
                 # Actually enter the position
                 position = self.paper_engine._enter_paper_position(
                     decision=decision,
