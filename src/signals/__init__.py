@@ -3,7 +3,7 @@
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List, Dict, Set
+from typing import Optional, List, Dict, Set, Any
 
 
 class SignalState(Enum):
@@ -21,6 +21,30 @@ class AccelerationState(Enum):
     DECELERATING = "DECELERATING"
     STABLE = "STABLE"
     ACCELERATING = "ACCELERATING"
+
+
+class TradeabilityTrend(Enum):
+    """Tradeability improvement trend."""
+    DETERIORATING = "DETERIORATING"
+    STABLE = "STABLE"
+    IMPROVING = "IMPROVING"
+    RAPIDLY_IMPROVING = "RAPIDLY_IMPROVING"
+    UNKNOWN = "UNKNOWN"
+
+
+class ReawakeningState(Enum):
+    """Reawakening state for dormant tokens."""
+    DORMANT = "DORMANT"
+    WAKING = "WAKING"
+    REAWAKENING = "REAWAKENING"
+    ACTIVE = "ACTIVE"
+
+
+class LiquiditySource(Enum):
+    """Source of liquidity data."""
+    BONDING_CURVE = "BONDING_CURVE"
+    AMM_POOL = "AMM_POOL"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
@@ -131,6 +155,18 @@ class IgnitionCandidate:
     independent_buyers_15s: int = 0
     buyer_acceleration_15s: float = 0.0  # ratio
     
+    # Tradeability (liquidity improvement)
+    tradeability_trend: TradeabilityTrend = TradeabilityTrend.UNKNOWN
+    liquidity_current: Optional[float] = None
+    liquidity_change_pct: float = 0.0
+    buy_impact_bps: int = 0
+    sell_impact_bps: int = 0
+    
+    # Reawakening
+    reawakening_state: ReawakeningState = ReawakeningState.DORMANT
+    prior_activity_hours: float = 0.0
+    reawakening_trigger: str = ""
+    
     # State
     signal_state: SignalState = SignalState.QUIET
     
@@ -143,6 +179,10 @@ class IgnitionCandidate:
     
     # Reference
     flow_metrics: Optional[TokenFlowMetrics] = None
+    liquidity_metrics: Any = None  # LiquidityMetrics, set after class definition
+    
+    # Why now (human-readable reason)
+    why_now: str = ""
 
 
 @dataclass
@@ -195,10 +235,111 @@ class WalletCluster:
 # Window sizes in seconds
 WINDOWS = [5, 15, 30, 60, 300]  # 5s, 15s, 30s, 1m, 5m
 
+# Liquidity tracking windows
+LIQUIDITY_WINDOWS = [15, 30, 60, 300]  # 15s, 30s, 1m, 5m
+
+
+@dataclass
+class LiquidityMetrics:
+    """Liquidity and execution surface metrics for a token."""
+    token_address: str
+    
+    # Liquidity source
+    source: LiquiditySource = LiquiditySource.UNKNOWN
+    
+    # Bonding curve metrics (if applicable)
+    curve_native_balance: float = 0.0
+    curve_progress: float = 0.0  # 0-1
+    estimated_buy_impact: float = 0.0  # % price impact for 1 ETH buy
+    estimated_sell_impact: float = 0.0  # % price impact for 1 ETH sell
+    current_mcap: float = 0.0
+    
+    # AMM/pool metrics (if applicable)
+    pool_liquidity: float = 0.0
+    reserve_native: float = 0.0
+    reserve_token: float = 0.0
+    
+    # Derived
+    exit_depth_native: float = 0.0  # how much can be sold at <5% impact
+    buy_impact_bps: int = 0  # basis points for 1% of pool
+    sell_impact_bps: int = 0
+    
+    # Timestamps
+    calculated_at: datetime = field(default_factory=datetime.utcnow)
+    data_age_seconds: float = 0.0
+    
+    # Confidence
+    is_stale: bool = True
+    is_estimated: bool = True
+
+
+@dataclass
+class LiquidityWindow:
+    """Rolling window of liquidity metrics."""
+    window_seconds: int
+    
+    # Depth metrics
+    depth_native: float = 0.0
+    depth_change_pct: float = 0.0  # vs prior window
+    
+    # Impact metrics
+    buy_impact_bps: int = 0
+    sell_impact_bps: int = 0
+    buy_impact_change_pct: float = 0.0
+    sell_impact_change_pct: float = 0.0
+    
+    # Exit capacity
+    exit_depth_native: float = 0.0
+    exit_capacity_change_pct: float = 0.0
+    
+    # Timestamp
+    window_end: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class ReawakeningEvent:
+    """Reawakening detection for dormant tokens."""
+    token_address: str
+    
+    # State transition
+    prior_state: ReawakeningState = ReawakeningState.DORMANT
+    new_state: ReawakeningState = ReawakeningState.REAWAKENING
+    
+    # Trigger
+    trigger: str = ""  # e.g., "buyer_rate_jump", "depth_increase", "mcap_breakout"
+    trigger_value: float = 0.0
+    baseline_value: float = 0.0
+    current_value: float = 0.0
+    
+    # Context
+    buyer_rate_baseline: float = 0.0
+    buyer_rate_current: float = 0.0
+    capital_baseline: float = 0.0
+    capital_current: float = 0.0
+    depth_baseline: float = 0.0
+    depth_current: float = 0.0
+    
+    # Timing
+    observed_at: datetime = field(default_factory=datetime.utcnow)
+    prior_activity_at: Optional[datetime] = None
+    
+    # Signal combination
+    combined_with_ignition: bool = False
+    tradeability_trend: TradeabilityTrend = TradeabilityTrend.UNKNOWN
+
 # Signal state thresholds (to be tuned from real data)
 DEFAULT_THRESHOLDS = {
     "novel_capital_min_ignition": 100.0,  # $100 minimum for ignition
     "independence_min_ratio": 0.5,  # 50% independent for ignition
     "acceleration_min_ratio": 1.5,  # 1.5x prior window for acceleration
     "vs_baseline_min": 2.0,  # 2x baseline for signal
+    # Liquidity thresholds
+    "depth_improvement_min_pct": 0.20,  # 20% improvement for IMPROVING
+    "depth_improvement_rapid_pct": 0.50,  # 50% for RAPIDLY_IMPROVING
+    # Reawakening thresholds
+    "reawakening_buyer_jump_min": 3.0,  # 3x baseline buyers
+    "reawakening_capital_jump_min": 5.0,  # 5x baseline capital
+    "reawakening_depth_jump_min": 1.5,  # 1.5x baseline depth
+    "dormant_baseline_trades": 10,  # trades to establish dormancy
+    "dormant_time_hours": 24,  # hours of inactivity for dormancy
 }

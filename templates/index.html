@@ -142,11 +142,20 @@
     <div class="main">
         <!-- Ignition Candidates -->
         <div class="section-title">
-            <span>Top Ignition Candidates</span>
+            <span>🔥 Top Ignition Candidates</span>
             <span class="count" id="candidates-count">0</span>
         </div>
         <div id="candidates-container">
             <div class="empty-state">Waiting for ignition signals...</div>
+        </div>
+        
+        <!-- Active Reawakenings -->
+        <div class="section-title" style="margin-top:16px;">
+            <span>🌙 Active Reawakenings</span>
+            <span class="count" id="reawakenings-count">0</span>
+        </div>
+        <div id="reawakenings-container">
+            <div class="empty-state">No reawakening tokens detected</div>
         </div>
         
         <!-- Collapsible Live Events -->
@@ -255,6 +264,8 @@
                     const state = c.signal_state || 'UNKNOWN';
                     const stateClass = state.toLowerCase();
                     const token = c.token_address || '';
+                    const tradeability = c.tradeability_trend || 'UNKNOWN';
+                    const reawakening = c.reawakening_state || 'DORMANT';
                     
                     return `
                         <div class="candidate ${stateClass}">
@@ -272,15 +283,15 @@
                                     <div class="metric-value">${c.independent_buyers_15s || '--'}</div>
                                 </div>
                                 <div class="metric">
-                                    <div class="metric-label">Buyer Accel.</div>
-                                    <div class="metric-value">${c.buyer_acceleration_15s?.toFixed(2) || '--'}</div>
+                                    <div class="metric-label">Tradeability</div>
+                                    <div class="metric-value">${tradeability}</div>
                                 </div>
                                 <div class="metric">
-                                    <div class="metric-label">vs Baseline</div>
-                                    <div class="metric-value">${c.vs_baseline?.toFixed(2) || '0'}</div>
+                                    <div class="metric-label">Reawakening</div>
+                                    <div class="metric-value">${reawakening}</div>
                                 </div>
                             </div>
-                            <div class="candidate-age">${formatAge(c.ignition_detected_at)}</div>
+                            <div class="candidate-age">${formatAge(c.ignition_detected_at)} | ${c.why_now || ''}</div>
                         </div>
                     `;
                 }).join('');
@@ -317,9 +328,62 @@
             }
         }
         
+        async function fetchReawakenings() {
+            try {
+                const res = await fetch('/api/v1/signals/reawakenings');
+                const data = await res.json();
+                const reawakenings = data.reawakenings || [];
+                
+                document.getElementById('reawakenings-count').textContent = reawakenings.length;
+                
+                const container = document.getElementById('reawakenings-container');
+                if (!reawakenings.length) {
+                    container.innerHTML = '<div class="empty-state">No reawakening tokens detected</div>';
+                    return;
+                }
+                
+                container.innerHTML = reawakenings.slice(0, 5).map(r => {
+                    const token = r.token_address || '';
+                    const state = r.state || 'UNKNOWN';
+                    const trend = r.tradeability_trend || 'UNKNOWN';
+                    
+                    return `
+                        <div class="candidate">
+                            <div class="candidate-header">
+                                <span class="token-address">${token.slice(0, 8)}...${token.slice(-6)}</span>
+                                <span class="token-state">${state}</span>
+                            </div>
+                            <div class="candidate-metrics">
+                                <div class="metric">
+                                    <div class="metric-label">NC 15s</div>
+                                    <div class="metric-value">${formatNumber(r.novel_capital_15s)}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Indep. Buyers</div>
+                                    <div class="metric-value">${r.independent_buyers_15s || '--'}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Tradeability</div>
+                                    <div class="metric-value">${trend}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Prior Hours</div>
+                                    <div class="metric-value">${r.prior_activity_hours?.toFixed(1) || '--'}h</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+            } catch (e) {
+                console.error('Reawakenings fetch failed:', e);
+            }
+        }
+        
         // Poll every 3 seconds
         setInterval(fetchHealth, 3000);
         setInterval(fetchCandidates, 5000);
+        setInterval(fetchReawakenings, 5000);
         setInterval(fetchRecentEvents, 10000);
         
         // Initial fetch

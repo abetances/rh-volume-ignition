@@ -10,7 +10,9 @@ import hashlib
 
 from src.signals import (
     TradeFlow, TokenFlowMetrics, AccelerationWindow, IgnitionCandidate,
-    SignalState, AccelerationState, WINDOWS, DEFAULT_THRESHOLDS, WalletCluster
+    SignalState, AccelerationState, TradeabilityTrend, ReawakeningState,
+    LiquiditySource, LiquidityMetrics, LiquidityWindow,
+    WINDOWS, LIQUIDITY_WINDOWS, DEFAULT_THRESHOLDS, WalletCluster
 )
 from src.db import get_database, Database
 
@@ -41,6 +43,22 @@ class FlowAnalyzer:
         
         # Recent state transitions for event tape
         self._state_transitions: deque = deque(maxlen=100)
+        
+        # Liquidity tracking: token -> window_seconds -> LiquidityWindow
+        self._liquidity_windows: Dict[str, Dict[int, LiquidityWindow]] = defaultdict(
+            lambda: {w: LiquidityWindow(window_seconds=w) for w in LIQUIDITY_WINDOWS}
+        )
+        
+        # Current liquidity metrics per token
+        self._liquidity: Dict[str, LiquidityMetrics] = {}
+        
+        # Reawakening state per token
+        self._reawakening: Dict[str, ReawakeningState] = {}
+        self._reawakening_events: deque = deque(maxlen=100)
+        
+        # Token activity tracking (for dormancy detection)
+        self._last_activity: Dict[str, datetime] = {}
+        self._trade_count: Dict[str, int] = defaultdict(int)
     
     def ingest_trade(self, flow: TradeFlow):
         """Ingest a single trade flow."""
@@ -366,6 +384,196 @@ class FlowAnalyzer:
             "buyers_avg": 1.0,
             "volume_avg": 100.0,
         }
+    
+    # === LIQUIDITY & TRADEABILITY METHODS ===
+    
+    def update_liquidity(self, token: str, liquidity: LiquidityMetrics):
+        """Update liquidity metrics for a token."""
+        self._liquidity[token] = liquidity
+        
+        # Update rolling windows
+        depth = liquidity.exit_depth_native or liquidity.curve_native_balance or 0
+        for window_seconds in LIQUIDITY_WINDOWS:
+            lw = self._liquidity_windows[token][window_seconds]
+            prior_depth = lw.depth_native
+            lw.depth_native = depth
+            lw.window_end = datetime.utcnow()
+            
+            # Calculate change
+            if prior_depth > 0:
+                lw.depth_change_pct = (depth - prior_depth) / prior_depth
+            
+            # Update impact metrics
+            lw.buy_impact_bps = liquidity.buy_impact_bps
+            lw.sell_impact_bps = liquidity.sell_impact_bps
+    
+    def get_tradeability_trend(self, token: str) -> TradeabilityTrend:
+        """Determine tradeability trend based on liquidity improvements."""
+        if token not in self._liquidity_windows:
+            return TradeabilityTrend.UNKNOWN
+        
+        windows = self._liquidity_windows[token]
+        
+        # Check 15s and 30s windows for rapid improvement
+        for ws in [15, 30]:
+            if ws in windows:
+                lw = windows[ws]
+                if lw.depth_change_pct >= self.thresholds.get("depth_improvement_rapid_pct", 0.5):
+                    return TradeabilityTrend.RAPIDLY_IMPROVING
+        
+        # Check for steady improvement
+        for ws in [30, 60]:
+            if ws in windows:
+                lw = windows[ws]
+                if lw.depth_change_pct >= self.thresholds.get("depth_improvement_min_pct", 0.2):
+                    return TradeabilityTrend.IMPROVING
+        
+        # Check for deterioration
+        for ws in [15, 30, 60]:
+            if ws in windows:
+                lw = windows[ws]
+                if lw.depth_change_pct <= -0.2:
+                    return TradeabilityTrend.DETERIORATING
+        
+        return TradeabilityTrend.STABLE
+    
+    def get_liquidity_change_pct(self, token: str, window_seconds: int = 30) -> float:
+        """Get liquidity change percentage for a token."""
+        if token not in self._liquidity_windows:
+            return 0.0
+        return self._liquidity_windows[token].get(window_seconds, LiquidityWindow(window_seconds)).depth_change_pct
+    
+    # === REAWAKENING DETECTION ===
+    
+    def _check_reawakening(self, token: str):
+        """Check if a token is reawakening from dormancy."""
+        now = datetime.utcnow()
+        
+        # Update last activity
+        if token not in self._last_activity:
+            self._last_activity[token] = now
+            self._reawakening[token] = ReawakeningState.DORMANT
+            return
+        
+        last_activity = self._last_activity[token]
+        hours_since = (now - last_activity).total_seconds() / 3600
+        
+        # Get current metrics
+        metrics = self.get_metrics(token, 15)
+        current_buyers = metrics.estimated_independent_buyers
+        current_capital = metrics.estimated_novel_capital
+        
+        # Get baseline
+        baseline = self._baselines.get(token, {})
+        baseline_buyers = baseline.get("buyers_avg", 1.0)
+        baseline_capital = baseline.get("novel_capital_avg", 10.0)
+        
+        prior_state = self._reawakening.get(token, ReawakeningState.DORMANT)
+        new_state = prior_state
+        trigger = ""
+        
+        # Check for wake-up conditions
+        if prior_state == ReawakeningState.DORMANT:
+            # Check buyer jump
+            if baseline_buyers > 0 and current_buyers >= baseline_buyers * self.thresholds.get("reawakening_buyer_jump_min", 3.0):
+                new_state = ReawakeningState.WAKING
+                trigger = "buyer_rate_jump"
+            # Check capital jump
+            elif baseline_capital > 0 and current_capital >= baseline_capital * self.thresholds.get("reawakening_capital_jump_min", 5.0):
+                new_state = ReawakeningState.WAKING
+                trigger = "capital_jump"
+        
+        # Check for reawakening (sustained activity)
+        if prior_state in [ReawakeningState.WAKING, ReawakeningState.REAWAKENING]:
+            if hours_since < 1.0 and current_buyers > baseline_buyers:
+                new_state = ReawakeningState.REAWAKENING
+            elif hours_since < 0.25:  # 15 minutes
+                new_state = ReawakeningState.ACTIVE
+        
+        # Update state
+        if new_state != prior_state:
+            self._reawakening[token] = new_state
+            self._last_activity[token] = now
+            
+            # Record event
+            if new_state in [ReawakeningState.WAKING, ReawakeningState.REAWAKENING]:
+                event = {
+                    "token": token,
+                    "prior_state": prior_state.value,
+                    "new_state": new_state.value,
+                    "trigger": trigger,
+                    "observed_at": now.isoformat(),
+                    "buyer_rate_baseline": baseline_buyers,
+                    "buyer_rate_current": current_buyers,
+                    "capital_baseline": baseline_capital,
+                    "capital_current": current_capital,
+                }
+                self._reawakening_events.append(event)
+                
+                # Also add to state transitions for event tape
+                self._state_transitions.append({
+                    "token_address": token,
+                    "old_state": prior_state.value,
+                    "new_state": new_state.value,
+                    "reason": trigger or "sustained_activity",
+                    "timestamp": now.isoformat(),
+                })
+        
+        # Update activity
+        self._last_activity[token] = now
+        self._trade_count[token] += 1
+    
+    def get_reawakening_events(self, limit: int = 10) -> List[Dict]:
+        """Get recent reawakening events."""
+        events = list(self._reawakening_events)
+        return events[-limit:]
+    
+    def get_active_reawakenings(self, limit: int = 10) -> List[Dict]:
+        """Get currently active reawakening tokens."""
+        active = []
+        for token, state in self._reawakening.items():
+            if state in [ReawakeningState.REAWAKENING, ReawakeningState.WAKING, ReawakeningState.ACTIVE]:
+                metrics = self.get_metrics(token, 15)
+                liquidity = self._liquidity.get(token)
+                tradeability = self.get_tradeability_trend(token)
+                
+                last_act = self._last_activity.get(token)
+                prior_hours = 0.0
+                if last_act:
+                    prior_hours = (datetime.utcnow() - last_act).total_seconds() / 3600
+                
+                active.append({
+                    "token_address": token,
+                    "state": state.value,
+                    "tradeability_trend": tradeability.value,
+                    "novel_capital_15s": metrics.estimated_novel_capital,
+                    "independent_buyers_15s": metrics.estimated_independent_buyers,
+                    "buyer_acceleration": metrics.novel_capital_acceleration,
+                    "liquidity": liquidity.exit_depth_native if liquidity else None,
+                    "prior_activity_hours": prior_hours,
+                    "observed_at": last_act.isoformat() if last_act else None,
+                })
+        
+        # Sort by capital acceleration
+        active.sort(key=lambda x: x.get("buyer_acceleration", 0), reverse=True)
+        return active[:limit]
+    
+    def ingest_trade(self, flow: TradeFlow):
+        """Ingest a single trade flow."""
+        token = flow.token_address
+        
+        # Add to rolling windows
+        for window_seconds in WINDOWS:
+            self._windows[token][window_seconds].append(flow)
+        
+        # Update wallet cluster detection
+        self._update_cluster_detection(flow)
+        
+        # Check for state transitions
+        self._check_state_transition(token)
+        
+        # Check for reawakening
+        self._check_reawakening(token)
 
 
 # Global analyzer instance

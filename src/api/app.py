@@ -290,6 +290,36 @@ def signals_transitions():
         return jsonify({"error": str(e)})
 
 
+@app.route('/api/v1/signals/reawakenings')
+def signals_reawakenings():
+    """Get active reawakening tokens."""
+    try:
+        analyzer = get_flow_analyzer()
+        reawakenings = analyzer.get_active_reawakenings(limit=10)
+        return jsonify({
+            "reawakenings": reawakenings,
+            "count": len(reawakenings)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route('/api/v1/signals/tradeability/<address>')
+def signals_tradeability(address):
+    """Get tradeability trend for a token."""
+    try:
+        analyzer = get_flow_analyzer()
+        trend = analyzer.get_tradeability_trend(address.lower())
+        change_pct = analyzer.get_liquidity_change_pct(address.lower())
+        return jsonify({
+            "token_address": address.lower(),
+            "tradeability_trend": trend.value,
+            "liquidity_change_pct": change_pct
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/api/v1/tokens/<address>/flow')
 def token_flow(address):
     """Get detailed flow for a specific token."""
