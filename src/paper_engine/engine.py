@@ -157,6 +157,9 @@ class PaperEngine:
         
         trade_id = str(uuid.uuid4())[:8]
         
+        # Get entry volume from the decision's metrics
+        entry_volume = decision.ignition_score * 1000  # Approximate - would need real volume feed
+        
         position = PaperPosition(
             paper_trade_id=trade_id,
             token_address=decision.token_address,
@@ -168,6 +171,7 @@ class PaperEngine:
             position_value=self.config.default_position_pct * self.config.max_position_value,
             
             entry_reason=decision.why_now or f"IGNITION signal, confidence={decision.confidence:.2f}",
+            entry_volume=entry_volume,
             state="open",
         )
         
@@ -180,8 +184,20 @@ class PaperEngine:
         token_mcaps: Dict[str, float],
         token_liquidity: Dict[str, float],
         current_time: datetime,
+        token_volumes: Dict[str, float] = None,
     ) -> List[PaperPosition]:
-        """Update position values and check exit conditions."""
+        """Update position values and check exit conditions.
+        
+        Args:
+            token_prices: current price per token
+            token_mcaps: current market cap per token
+            token_liquidity: current liquidity per token
+            current_time: current timestamp
+            token_volumes: windowed volume rate per token (not cumulative)
+        """
+        
+        if token_volumes is None:
+            token_volumes = {}
         
         exited = []
         
@@ -196,6 +212,10 @@ class PaperEngine:
                 position.current_mcap = token_mcaps[token]
             if token in token_liquidity:
                 position.current_liquidity = token_liquidity[token]
+            
+            # Update volume metrics (research only - not used for entry/exit)
+            if token in token_volumes:
+                self._update_volume_metrics(position, token_volumes[token], current_time)
             
             # Calculate P&L
             if position.current_price > 0 and position.executable_entry_price > 0:
@@ -214,6 +234,38 @@ class PaperEngine:
             position.updated_at = current_time
         
         return exited
+    
+    def _update_volume_metrics(
+        self,
+        position: PaperPosition,
+        current_volume: float,
+        current_time: datetime,
+    ):
+        """Track volume metrics for research (not used for entry/exit decisions)."""
+        
+        entry_time = position.entry_decision_time
+        seconds_since_entry = (current_time - entry_time).total_seconds()
+        
+        # Track max volume at each horizon
+        if seconds_since_entry <= 30:
+            if current_volume > position.max_volume_30s:
+                position.max_volume_30s = current_volume
+                position.peak_volume_30s_time = current_time
+        
+        if seconds_since_entry <= 120:
+            if current_volume > position.max_volume_2m:
+                position.max_volume_2m = current_volume
+                position.peak_volume_2m_time = current_time
+        
+        if seconds_since_entry <= 300:
+            if current_volume > position.max_volume_5m:
+                position.max_volume_5m = current_volume
+                position.peak_volume_5m_time = current_time
+        
+        if seconds_since_entry <= 600:
+            if current_volume > position.max_volume_10m:
+                position.max_volume_10m = current_volume
+                position.peak_volume_10m_time = current_time
     
     def _check_exit_conditions(
         self,
@@ -244,6 +296,26 @@ class PaperEngine:
         position.exit_time = exit_time
         position.exit_reason = exit_reason
         
+        # Calculate volume metrics for trade record
+        entry_vol = position.entry_volume
+        
+        # Volume capture ratios and expansion factors
+        vol_cap_30s = entry_vol / position.max_volume_30s if position.max_volume_30s > 0 else 0.0
+        vol_cap_2m = entry_vol / position.max_volume_2m if position.max_volume_2m > 0 else 0.0
+        vol_cap_5m = entry_vol / position.max_volume_5m if position.max_volume_5m > 0 else 0.0
+        vol_cap_10m = entry_vol / position.max_volume_10m if position.max_volume_10m > 0 else 0.0
+        
+        vol_exp_30s = position.max_volume_30s / entry_vol if entry_vol > 0 else 0.0
+        vol_exp_2m = position.max_volume_2m / entry_vol if entry_vol > 0 else 0.0
+        vol_exp_5m = position.max_volume_5m / entry_vol if entry_vol > 0 else 0.0
+        vol_exp_10m = position.max_volume_10m / entry_vol if entry_vol > 0 else 0.0
+        
+        # Time to peak volume
+        def calc_seconds_to_peak(peak_time, entry_time):
+            if peak_time and entry_time:
+                return (peak_time - entry_time).total_seconds()
+            return 0.0
+        
         # Create completed trade record
         trade = PaperTrade(
             paper_trade_id=position.paper_trade_id,
@@ -261,6 +333,25 @@ class PaperEngine:
             max_mfe=position.max_favorable_excursion,
             max_mae=position.max_adverse_excursion,
             hold_time_seconds=position.hold_time_seconds,
+            
+            # Volume metrics (research only)
+            entry_volume=entry_vol,
+            max_volume_30s=position.max_volume_30s,
+            max_volume_2m=position.max_volume_2m,
+            max_volume_5m=position.max_volume_5m,
+            max_volume_10m=position.max_volume_10m,
+            volume_capture_ratio_30s=vol_cap_30s,
+            volume_capture_ratio_2m=vol_cap_2m,
+            volume_capture_ratio_5m=vol_cap_5m,
+            volume_capture_ratio_10m=vol_cap_10m,
+            volume_expansion_30s=vol_exp_30s,
+            volume_expansion_2m=vol_exp_2m,
+            volume_expansion_5m=vol_exp_5m,
+            volume_expansion_10m=vol_exp_10m,
+            seconds_to_max_volume_30s=calc_seconds_to_peak(position.peak_volume_30s_time, position.entry_decision_time),
+            seconds_to_max_volume_2m=calc_seconds_to_peak(position.peak_volume_2m_time, position.entry_decision_time),
+            seconds_to_max_volume_5m=calc_seconds_to_peak(position.peak_volume_5m_time, position.entry_decision_time),
+            seconds_to_max_volume_10m=calc_seconds_to_peak(position.peak_volume_10m_time, position.entry_decision_time),
         )
         
         self.completed_trades.append(trade)

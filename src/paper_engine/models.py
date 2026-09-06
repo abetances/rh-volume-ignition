@@ -112,6 +112,21 @@ class PaperPosition:
     current_mcap: float = 0.0
     current_liquidity: float = 0.0
     
+    # Volume metrics at entry (windowed rate, not cumulative)
+    entry_volume: float = 0.0
+    
+    # Max volume observed after entry
+    max_volume_30s: float = 0.0
+    max_volume_2m: float = 0.0
+    max_volume_5m: float = 0.0
+    max_volume_10m: float = 0.0
+    
+    # Timestamps for volume peaks
+    peak_volume_30s_time: Optional[datetime] = None
+    peak_volume_2m_time: Optional[datetime] = None
+    peak_volume_5m_time: Optional[datetime] = None
+    peak_volume_10m_time: Optional[datetime] = None
+    
     # P&L
     paper_pnl: float = 0.0
     paper_return: float = 0.0
@@ -156,9 +171,36 @@ class PaperTrade:
     realized_pnl: float = 0.0
     realized_return: float = 0.0
     
-    # Metrics
+    # Price-based metrics
     max_mfe: float = 0.0  # % - best price vs entry
     max_mae: float = 0.0  # % - worst price vs entry
     hold_time_seconds: float = 0.0
+    
+    # VOLUME METRICS - research only, not used for entry/exit decisions
+    entry_volume: float = 0.0  # volume at entry time (windowed rate)
+    
+    # Max volume after entry at different horizons
+    max_volume_30s: float = 0.0
+    max_volume_2m: float = 0.0
+    max_volume_5m: float = 0.0
+    max_volume_10m: float = 0.0
+    
+    # Volume capture ratio = volume_at_entry / max_volume_within_horizon
+    volume_capture_ratio_30s: float = 0.0
+    volume_capture_ratio_2m: float = 0.0
+    volume_capture_ratio_5m: float = 0.0
+    volume_capture_ratio_10m: float = 0.0
+    
+    # Volume expansion = max_volume_within_horizon / volume_at_entry
+    volume_expansion_30s: float = 0.0
+    volume_expansion_2m: float = 0.0
+    volume_expansion_5m: float = 0.0
+    volume_expansion_10m: float = 0.0
+    
+    # Time to peak volume
+    seconds_to_max_volume_30s: float = 0.0
+    seconds_to_max_volume_2m: float = 0.0
+    seconds_to_max_volume_5m: float = 0.0
+    seconds_to_max_volume_10m: float = 0.0
     
     created_at: datetime = field(default_factory=datetime.utcnow)
