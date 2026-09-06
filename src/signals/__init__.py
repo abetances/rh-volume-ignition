@@ -47,6 +47,15 @@ class LiquiditySource(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class RotationState(Enum):
+    """Rotation detection state."""
+    UNKNOWN = "UNKNOWN"
+    POSSIBLE_ROTATION = "POSSIBLE_ROTATION"
+    PROBABLE_ROTATION = "PROBABLE_ROTATION"
+    STRONG_ROTATION = "STRONG_ROTATION"
+    REJECTED = "REJECTED"  # False rotation
+
+
 @dataclass
 class TradeFlow:
     """Normalized trade flow for a single transaction."""
@@ -327,6 +336,52 @@ class ReawakeningEvent:
     combined_with_ignition: bool = False
     tradeability_trend: TradeabilityTrend = TradeabilityTrend.UNKNOWN
 
+
+@dataclass
+class RotationCandidate:
+    """A token with detected capital rotation from another token."""
+    token_address: str  # destination token
+    
+    # Rotation metadata
+    rotation_state: RotationState = RotationState.UNKNOWN
+    rotation_confidence: float = 0.0
+    rotation_score: float = 0.0
+    
+    # Source token
+    source_token: str = ""
+    source_token_state: str = ""  # prior state (e.g., "runner", "ignition", "high_volume")
+    
+    # Actor info
+    actor_id: str = ""  # wallet or cluster that rotated
+    is_cluster: bool = False
+    
+    # Amounts
+    source_exit_amount_usd: float = 0.0
+    destination_entry_amount_usd: float = 0.0
+    
+    # Timing
+    source_exit_at: Optional[datetime] = None
+    destination_entry_at: Optional[datetime] = None
+    rotation_delay_seconds: float = 0.0
+    
+    # Evidence
+    evidence_refs: List[str] = field(default_factory=list)  # tx hashes
+    rejection_reason: str = ""  # if REJECTED
+    
+    # Follow-through
+    independent_follow_through: bool = False
+    follow_through_buyers: int = 0
+    follow_through_capital: float = 0.0
+    
+    # Prior runner boost
+    is_prior_runner: bool = False
+    is_prior_ignition: bool = False
+    prior_runner_hours_ago: float = 0.0
+    
+    # Timestamps
+    detected_at: datetime = field(default_factory=datetime.utcnow)
+    why_now: str = ""
+
 # Signal state thresholds (to be tuned from real data)
 DEFAULT_THRESHOLDS = {
     "novel_capital_min_ignition": 100.0,  # $100 minimum for ignition
@@ -342,4 +397,16 @@ DEFAULT_THRESHOLDS = {
     "reawakening_depth_jump_min": 1.5,  # 1.5x baseline depth
     "dormant_baseline_trades": 10,  # trades to establish dormancy
     "dormant_time_hours": 24,  # hours of inactivity for dormancy
+    # Rotation thresholds
+    "rotation_exit_min_usd": 100.0,  # min exit to count as material
+    "rotation_entry_min_usd": 50.0,  # min entry to count as material
+    "rotation_max_delay_seconds": 300,  # 5 min max delay for strong rotation
+    "rotation_probable_delay_seconds": 900,  # 15 min for probable
+    "rotation_min_confidence": 0.5,  # min confidence for POSSIBLE
+    "dust_threshold_usd": 10.0,  # below this = dust, reject
+    "cluster_internal_min_pct": 0.8,  # >80% same cluster = internal transfer
+    # Prior runner weighting
+    "prior_runner_hours": 24,  # within 24h = recent runner
+    "prior_ignition_hours": 6,  # within 6h = recent ignition
+    "prior_runner_boost": 2.0,  # 2x weight for prior runner
 }

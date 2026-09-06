@@ -320,6 +320,34 @@ def signals_tradeability(address):
         return jsonify({"error": str(e)})
 
 
+@app.route('/api/v1/signals/rotations')
+def signals_rotations():
+    """Get active rotation candidates."""
+    try:
+        analyzer = get_flow_analyzer()
+        rotations = analyzer.get_rotation_candidates(limit=10)
+        return jsonify({
+            "rotations": [asdict(r) for r in rotations],
+            "count": len(rotations)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route('/api/v1/signals/rotations/events')
+def signals_rotation_events():
+    """Get recent rotation events."""
+    try:
+        analyzer = get_flow_analyzer()
+        events = analyzer.get_rotation_events(limit=20)
+        return jsonify({
+            "events": events,
+            "count": len(events)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/api/v1/tokens/<address>/flow')
 def token_flow(address):
     """Get detailed flow for a specific token."""

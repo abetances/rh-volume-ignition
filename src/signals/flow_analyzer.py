@@ -11,7 +11,8 @@ import hashlib
 from src.signals import (
     TradeFlow, TokenFlowMetrics, AccelerationWindow, IgnitionCandidate,
     SignalState, AccelerationState, TradeabilityTrend, ReawakeningState,
-    LiquiditySource, LiquidityMetrics, LiquidityWindow,
+    LiquiditySource, LiquidityMetrics, LiquidityWindow, RotationCandidate,
+    RotationState,
     WINDOWS, LIQUIDITY_WINDOWS, DEFAULT_THRESHOLDS, WalletCluster
 )
 from src.db import get_database, Database
@@ -59,6 +60,23 @@ class FlowAnalyzer:
         # Token activity tracking (for dormancy detection)
         self._last_activity: Dict[str, datetime] = {}
         self._trade_count: Dict[str, int] = defaultdict(int)
+        
+        # === ROTATION TRACKING ===
+        # Recent sells per wallet: wallet -> list of (token, amount, timestamp)
+        self._wallet_recent_sells: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=50)
+        )
+        
+        # Token history for prior-runner detection: token -> last significant activity
+        self._token_last_runner: Dict[str, datetime] = {}  # tokens that were runners
+        self._token_last_ignition: Dict[str, datetime] = {}  # tokens that had ignition
+        
+        # Rotation candidates
+        self._rotation_candidates: Dict[str, RotationCandidate] = {}
+        self._rotation_events: deque = deque(maxlen=100)
+        
+        # Track all trades for rotation analysis
+        self._all_trades: deque = deque(maxlen=10000)  # recent trades buffer
     
     def ingest_trade(self, flow: TradeFlow):
         """Ingest a single trade flow."""
@@ -325,6 +343,9 @@ class FlowAnalyzer:
         
         # Update or create candidate
         if current_state in [SignalState.FORMING, SignalState.IGNITION, SignalState.ACCELERATING]:
+            # Check for rotation
+            rotation = self._rotation_candidates.get(token)
+            
             self._ignition_candidates[token] = IgnitionCandidate(
                 token_address=token,
                 signal_state=current_state,
@@ -332,6 +353,7 @@ class FlowAnalyzer:
                 novel_capital_acceleration_15s=metrics.vs_baseline_novel_capital,
                 independent_buyers_15s=metrics.estimated_independent_buyers,
                 buyer_acceleration_15s=metrics.vs_baseline_buyers,
+                why_now=rotation.why_now if rotation else "",
             )
         elif current_state == SignalState.FADING and token in self._ignition_candidates:
             del self._ignition_candidates[token]
@@ -566,6 +588,16 @@ class FlowAnalyzer:
         for window_seconds in WINDOWS:
             self._windows[token][window_seconds].append(flow)
         
+        # Track for rotation analysis
+        self._all_trades.append(flow)
+        
+        # Track sells for rotation detection
+        if flow.side.upper() == "SELL":
+            self._track_sell(flow)
+        else:
+            # Check for rotation on buys
+            self._check_rotation(flow)
+        
         # Update wallet cluster detection
         self._update_cluster_detection(flow)
         
@@ -574,6 +606,249 @@ class FlowAnalyzer:
         
         # Check for reawakening
         self._check_reawakening(token)
+        
+        # Mark if this token was a runner/ignition
+        self._update_token_history(token, flow)
+    
+    # === ROTATION DETECTION METHODS ===
+    
+    def _track_sell(self, flow: TradeFlow):
+        """Track a sell for potential rotation detection."""
+        wallet = flow.wallet.lower()
+        amount = flow.usd_value or flow.native_amount or 0
+        
+        # Skip dust
+        if amount < self.thresholds.get("dust_threshold_usd", 10):
+            return
+        
+        self._wallet_recent_sells[wallet].append({
+            "token": flow.token_address.lower(),
+            "amount": amount,
+            "timestamp": flow.timestamp,
+            "tx_hash": flow.tx_hash,
+            "side": "SELL"
+        })
+    
+    def _check_rotation(self, flow: TradeFlow):
+        """Check if a buy is a rotation from another token."""
+        if flow.side.upper() != "BUY":
+            return
+        
+        wallet = flow.wallet.lower()
+        token = flow.token_address.lower()
+        amount = flow.usd_value or flow.native_amount or 0
+        
+        # Skip dust
+        if amount < self.thresholds.get("dust_threshold_usd", 10):
+            return
+        
+        # Look for recent sells from this wallet
+        if wallet not in self._wallet_recent_sells:
+            return
+        
+        recent_sells = list(self._wallet_recent_sells[wallet])
+        now = flow.timestamp
+        
+        max_delay = self.thresholds.get("rotation_max_delay_seconds", 300)
+        probable_delay = self.thresholds.get("rotation_probable_delay_seconds", 900)
+        
+        for sell in recent_sells:
+            # Check time window
+            delay = (now - sell["timestamp"]).total_seconds()
+            if delay > probable_delay:
+                continue
+            
+            source_token = sell["token"]
+            
+            # Skip self-rotation (same token)
+            if source_token == token:
+                continue
+            
+            exit_amount = sell["amount"]
+            entry_amount = amount
+            
+            # Check minimum thresholds
+            exit_min = self.thresholds.get("rotation_exit_min_usd", 100)
+            entry_min = self.thresholds.get("rotation_entry_min_usd", 50)
+            
+            if exit_amount < exit_min or entry_amount < entry_min:
+                continue
+            
+            # Calculate confidence and state
+            state, confidence, score = self._evaluate_rotation(
+                source_token, token, wallet, exit_amount, entry_amount, delay
+            )
+            
+            if state != RotationState.REJECTED:
+                # Create rotation candidate
+                candidate = RotationCandidate(
+                    token_address=token,
+                    rotation_state=state,
+                    rotation_confidence=confidence,
+                    rotation_score=score,
+                    source_token=source_token,
+                    actor_id=wallet,
+                    source_exit_amount_usd=exit_amount,
+                    destination_entry_amount_usd=entry_amount,
+                    source_exit_at=sell["timestamp"],
+                    destination_entry_at=now,
+                    rotation_delay_seconds=delay,
+                    evidence_refs=[sell.get("", ""), flow.tx_hash],
+                )
+                
+                # Check prior runner status
+                self._check_prior_runner(candidate)
+                
+                # Store candidate
+                self._rotation_candidates[token] = candidate
+                
+                # Record event
+                self._rotation_events.append({
+                    "token": token,
+                    "source_token": source_token,
+                    "actor": wallet[:8] + "...",
+                    "state": state.value,
+                    "confidence": confidence,
+                    "delay_seconds": delay,
+                    "amount_in": entry_amount,
+                    "timestamp": now.isoformat(),
+                })
+                
+                # Add to state transitions
+                self._state_transitions.append({
+                    "token_address": token,
+                    "old_state": "N/A",
+                    "new_state": f"ROTATION_FROM_{source_token[:8]}",
+                    "reason": f"rotation_{state.value}",
+                    "timestamp": now.isoformat(),
+                })
+                
+                break  # Only need first match
+    
+    def _evaluate_rotation(self, source_token: str, dest_token: str, wallet: str,
+                          exit_amount: float, entry_amount: float, delay_seconds: float
+                          ) -> Tuple[RotationState, float, float]:
+        """Evaluate rotation quality and determine state."""
+        
+        # Calculate base confidence
+        confidence = 0.5  # Start neutral
+        
+        # Factor 1: Exit magnitude (more significant = higher confidence)
+        if exit_amount >= 1000:
+            confidence += 0.3
+        elif exit_amount >= 100:
+            confidence += 0.2
+        elif exit_amount >= 50:
+            confidence += 0.1
+        
+        # Factor 2: Entry magnitude
+        if entry_amount >= 500:
+            confidence += 0.2
+        elif entry_amount >= 100:
+            confidence += 0.1
+        
+        # Factor 3: Time proximity (shorter = higher confidence)
+        max_delay = self.thresholds.get("rotation_max_delay_seconds", 300)
+        if delay_seconds <= max_delay:
+            confidence += 0.2
+        elif delay_seconds <= self.thresholds.get("rotation_probable_delay_seconds", 900):
+            confidence += 0.1
+        
+        # Factor 4: Actor quality (repeat actor = higher confidence)
+        total_sells = sum(1 for s in self._wallet_recent_sells.get(wallet, []))
+        if total_sells > 3:
+            confidence += 0.15
+        elif total_sells > 1:
+            confidence += 0.1
+        
+        # Factor 5: Check for cluster/related activity
+        # (simplified - would need proper cluster analysis)
+        
+        # Calculate score
+        score = confidence * 100
+        
+        # Determine state
+        min_confidence = self.thresholds.get("rotation_min_confidence", 0.5)
+        
+        if confidence >= 0.8:
+            state = RotationState.STRONG_ROTATION
+        elif confidence >= 0.65:
+            state = RotationState.PROBABLE_ROTATION
+        elif confidence >= min_confidence:
+            state = RotationState.POSSIBLE_ROTATION
+        else:
+            state = RotationState.REJECTED
+        
+        return state, confidence, score
+    
+    def _check_prior_runner(self, candidate: RotationCandidate):
+        """Check if source token was a prior runner/ignition."""
+        source = candidate.source_token
+        now = datetime.utcnow()
+        
+        # Check if source was a runner
+        if source in self._token_last_runner:
+            runner_time = self._token_last_runner[source]
+            hours_ago = (now - runner_time).total_seconds() / 3600
+            max_hours = self.thresholds.get("prior_runner_hours", 24)
+            
+            if hours_ago <= max_hours:
+                candidate.is_prior_runner = True
+                candidate.prior_runner_hours_ago = hours_ago
+                candidate.rotation_confidence *= self.thresholds.get("prior_runner_boost", 2.0)
+                candidate.rotation_score *= self.thresholds.get("prior_runner_boost", 2.0)
+        
+        # Check if source had ignition
+        if source in self._token_last_ignition:
+            ignition_time = self._token_last_ignition[source]
+            hours_ago = (now - ignition_time).total_seconds() / 3600
+            max_hours = self.thresholds.get("prior_ignition_hours", 6)
+            
+            if hours_ago <= max_hours:
+                candidate.is_prior_ignition = True
+                candidate.source_token_state = "recent_ignition"
+            elif candidate.source_token_state != "recent_runner":
+                candidate.source_token_state = "prior_runner"
+        
+        # Set why_now
+        if candidate.is_prior_runner or candidate.is_prior_ignition:
+            candidate.why_now = f"Rotation from prior {candidate.source_token_state or 'runner'}"
+        else:
+            candidate.why_now = f"Rotation from {candidate.source_token[:10]}..."
+    
+    def _update_token_history(self, token: str, flow: TradeFlow):
+        """Update token history for prior-runner detection."""
+        now = flow.timestamp
+        
+        # Get current state
+        metrics = self.get_metrics(token, 15)
+        
+        # If high activity, mark as potential runner
+        if metrics.estimated_novel_capital > 10000:  # $10k+ novel capital
+            self._token_last_runner[token] = now
+        
+        # If ignition state, mark as ignition
+        if metrics.signal_state in [SignalState.IGNITION, SignalState.ACCELERATING]:
+            self._token_last_ignition[token] = now
+    
+    def get_rotation_candidates(self, limit: int = 10) -> List[RotationCandidate]:
+        """Get active rotation candidates."""
+        # Sort by score descending
+        sorted_candidates = sorted(
+            self._rotation_candidates.values(),
+            key=lambda x: x.rotation_score,
+            reverse=True
+        )
+        return sorted_candidates[:limit]
+    
+    def get_rotation_events(self, limit: int = 20) -> List[Dict]:
+        """Get recent rotation events."""
+        events = list(self._rotation_events)
+        return events[-limit:]
+    
+    def get_rotations_for_token(self, token: str) -> Optional[RotationCandidate]:
+        """Get rotation data for a specific token."""
+        return self._rotation_candidates.get(token.lower())
 
 
 # Global analyzer instance

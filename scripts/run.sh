@@ -34,7 +34,7 @@ source venv/bin/activate
 pip install flask flask-cors --quiet 2>/dev/null || true
 
 # Get port from env or default
-PORT=${PORT:-5000}
+PORT=${PORT:-5555}
 
 echo ""
 echo "Starting backend API on http://localhost:$PORT"
@@ -47,17 +47,17 @@ API_PID=$!
 # Wait for server to start
 sleep 2
 
-# Try to open browser (if supported)
-if command -v xdg-open &> /dev/null; then
-    echo "Opening browser..."
-    xdg-open "http://localhost:$PORT" &
-elif command -v open &> /dev/null; then
-    echo "Opening browser..."
-    open "http://localhost:$PORT" &
-else
-    echo "=========================================="
-    echo "  ⚠️  Browser auto-open not supported"
-    echo "=========================================="
+# Open browser only when explicitly requested.
+if [ "${OPEN_BROWSER:-0}" = "1" ]; then
+    if command -v xdg-open &> /dev/null; then
+        echo "Opening browser..."
+        xdg-open "http://localhost:$PORT" &
+    elif command -v open &> /dev/null; then
+        echo "Opening browser..."
+        open "http://localhost:$PORT" &
+    else
+        echo "Browser auto-open not supported"
+    fi
 fi
 
 echo ""
