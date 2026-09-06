@@ -9,10 +9,11 @@ from typing import Optional, List, Dict, Set, Any, Callable
 class SignalState(Enum):
     """Signal states for volume ignition."""
     QUIET = "QUIET"
+    FORMING_EARLY = "FORMING_EARLY"  # Early detection, before peak
     FORMING = "FORMING"
     IGNITION = "IGNITION"
     ACCELERATING = "ACCELERATING"
-    SATURATED = "SATURATED"
+    SATURATED = "SATURATED"  # Negative state - volume already peaked
     FADING = "FADING"
 
 
@@ -572,6 +573,13 @@ CONFIDENCE_THRESHOLD = 60.0  # Minimum confidence for high-priority alert
 
 # Alert cooldown to prevent spam (seconds)
 ALERT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+# Early ignition thresholds
+EARLY_IGNITION_THRESHOLD = 8.0  # Lower threshold for FORMING_EARLY
+EARLY_IGNITION_VELOCITY_MIN = 1.3  # Minimum velocity (acceleration ratio)
+SATURATION_PEAK_RATIO = 0.7  # Current >70% of recent peak = SATURATED
+VOLUME_STALL_RATIO = 0.4  # Post/pre below this = DECELERATING
+VOLUME_RISING_THRESHOLD = 0.2  # Current >20% of peak = RISING
 
 # Composite score weights (tunable)
 COMPOSITE_WEIGHTS = {

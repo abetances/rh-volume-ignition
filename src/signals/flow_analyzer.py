@@ -17,7 +17,8 @@ from src.signals import (
     CompositeIgnitionScore, IgnitionComponent, VolumeSaturation,
     COMPOSITE_WEIGHTS, PaperSignalSnapshot, OutcomeCheckpoint,
     OutcomeClassification, IGNITION_THRESHOLD, IGNITION_THRESHOLD_HIGH,
-    ALERT_COOLDOWN_SECONDS
+    ALERT_COOLDOWN_SECONDS, EARLY_IGNITION_THRESHOLD, EARLY_IGNITION_VELOCITY_MIN,
+    SATURATION_PEAK_RATIO, VOLUME_STALL_RATIO, VOLUME_RISING_THRESHOLD
 )
 from src.db import get_database, Database
 
@@ -982,24 +983,83 @@ class FlowAnalyzer:
         
         # === VOLUME FRESHNESS (40% penalty) ===
         
-        # Check if volume is already saturated
-        recent_vol = metrics_15s.gross_buy_flow + metrics_15s.gross_sell_flow
-        # Use 5m as longest window for baseline
-        baseline_vol = metrics_5m.gross_buy_flow + metrics_5m.gross_sell_flow
+        # === EARLY IGNITION DETECTION ===
+        # Get NON-OVERLAPPING windows for velocity calculation
+        # Current: last 15s, Prior: 15s-30s ago (not overlapping with current)
+        now = datetime.now(timezone.utc)
         
-        # Determine saturation state based on absolute volume
-        # Low volume (< 1 ETH) = BEFORE_VOLUME (no saturation yet)
-        # Medium volume (1-10 ETH) = VOLUME_EXPANDING  
-        # High volume (> 10 ETH) = ALREADY_CROWDED
-        if recent_vol < 1.0:
+        # Get all trades in the 15s window
+        trades_15s = list(self._windows[token].get(15, []))
+        if trades_15s:
+            window_end = trades_15s[-1].timestamp
+            window_start = trades_15s[0].timestamp
+            
+            # Prior window: 15-30s before current window
+            prior_start = window_start - timedelta(seconds=15)
+            prior_end = window_start
+            
+            # Get trades from prior window
+            prior_trades = [
+                t for t in self._windows[token].get(15, [])
+                if prior_start <= t.timestamp < prior_end
+            ]
+            
+            recent_vol = sum(t.native_amount for t in trades_15s)
+            prior_vol = sum(t.native_amount for t in prior_trades)
+        else:
+            recent_vol = metrics_15s.gross_buy_flow + metrics_15s.gross_sell_flow
+            prior_vol = 0
+        
+        # Calculate velocity (current vs prior non-overlapping window)
+        velocity_ratio = recent_vol / prior_vol if prior_vol > 0 else 1.0
+        
+        # Get total volume so far for this token
+        total_vol = metrics_5m.gross_buy_flow + metrics_5m.gross_sell_flow
+        
+        # Determine saturation state based on direction and position in volume curve
+        # BEFORE_VOLUME: low volume, we're at the start
+        # VOLUME_EXPANDING: volume increasing or moderate
+        # ALREADY_CROWDED: volume peaked and starting to decline
+        
+        # Use velocity to determine if we're rising or falling
+        is_accelerating = velocity_ratio > 1.3
+        is_decelerating = velocity_ratio < 0.7
+        
+        if recent_vol < 0.1:
+            # Very low volume - still early
             saturation = VolumeSaturation.BEFORE_VOLUME
             volume_freshness = 1.0
-        elif recent_vol < 10.0:
+        elif is_accelerating:
+            # Volume is accelerating - we're at the start of ignition
             saturation = VolumeSaturation.VOLUME_EXPANDING
-            volume_freshness = 0.7
-        else:
+            volume_freshness = 1.0
+        elif is_decelerating and recent_vol > 10:
+            # Volume is decelerating AND has high absolute volume = peaked
             saturation = VolumeSaturation.ALREADY_CROWDED
             volume_freshness = 0.4
+        elif recent_vol > 500 and not is_accelerating:
+            # Very high volume and not accelerating = likely peaked
+            saturation = VolumeSaturation.ALREADY_CROWDED
+            volume_freshness = 0.4
+        else:
+            # Otherwise, still expanding or moderate
+            saturation = VolumeSaturation.VOLUME_EXPANDING
+            volume_freshness = 0.7
+        
+        # === ADD SCORE VELOCITY COMPONENT ===
+        # Track score velocity: how fast is the composite score rising?
+        # Use acceleration ratio as a multiplier for early detection
+        score_velocity = min(velocity_ratio / 1.5, 1.5)  # 1.0 = stable, >1 = accelerating
+        
+        # Add velocity component
+        velocity_component = IgnitionComponent(
+            name="score_velocity",
+            value=score_velocity,
+            normalized=score_velocity,
+            weight=0.10,
+            evidence_refs=[]
+        )
+        components.append(velocity_component)
         
         # Calculate weighted score
         weighted_score = sum(c.normalized * c.weight for c in components)
@@ -1016,28 +1076,55 @@ class FlowAnalyzer:
         ]
         confidence = sum(confidence_components) / len(confidence_components) * 100
         
+        # === DETERMINE STATE WITH EARLY DETECTION ===
+        # Check for deceleration (volume stalling)
+        is_decelerating = velocity_ratio < VOLUME_STALL_RATIO
+        
         # Determine state
         if final_score < 20:
             state = SignalState.QUIET
+        elif saturation == VolumeSaturation.ALREADY_CROWDED:
+            # High volume = SATURATED (negative state, don't chase)
+            state = SignalState.SATURATED
+        elif is_decelerating:
+            # Volume stalling = FADING
+            state = SignalState.FADING
+        elif final_score < EARLY_IGNITION_THRESHOLD:
+            # Below normal threshold but may have velocity
+            if velocity_ratio >= EARLY_IGNITION_VELOCITY_MIN and recent_vol > 0:
+                # Low score but accelerating = EARLY signal
+                state = SignalState.FORMING_EARLY
+            else:
+                state = SignalState.QUIET
         elif final_score < 40:
-            state = SignalState.FORMING
+            # Normal FORMING range
+            if velocity_ratio >= EARLY_IGNITION_VELOCITY_MIN:
+                state = SignalState.FORMING_EARLY
+            else:
+                state = SignalState.FORMING
         elif final_score < 70:
             state = SignalState.IGNITION
         elif final_score < 85:
             state = SignalState.ACCELERATING
-        elif saturation == VolumeSaturation.ALREADY_CROWDED:
-            state = SignalState.SATURATED
         else:
             state = SignalState.ACCELERATING
         
         # Generate WHY NOW
         why_parts = []
+        if state == SignalState.FORMING_EARLY:
+            why_parts.append("EARLY: velocity detected")
+        if state == SignalState.SATURATED:
+            why_parts.append("SATURATED: volume peaked")
+        if state == SignalState.FADING:
+            why_parts.append("FADING: volume decelerating")
         if novel_cap > 1000:
             why_parts.append(f"novel capital +${novel_cap:.0f}")
         if metrics_15s.estimated_independent_buyers > 3:
             why_parts.append(f"{metrics_15s.estimated_independent_buyers} independent buyers")
         if quality > 50:
             why_parts.append(f"buyer quality {quality:.0f}")
+        if velocity_ratio >= EARLY_IGNITION_VELOCITY_MIN:
+            why_parts.append(f"velocity {velocity_ratio:.1f}x")
         if rotation and rotation.rotation_confidence > 0.5:
             why_parts.append("rotation in")
         if tradeability_trend in [TradeabilityTrend.IMPROVING, TradeabilityTrend.RAPIDLY_IMPROVING]:
@@ -1103,8 +1190,9 @@ class FlowAnalyzer:
         """Check if we should send an alert for this token/state transition."""
         now = datetime.now(timezone.utc)
         
-        # Only alert on IGNITION or ACCELERATING states
-        if new_state not in [SignalState.IGNITION, SignalState.ACCELERATING]:
+        # Alert on IGNITION, ACCELERATING, or FORMING_EARLY (early detection)
+        # Don't alert on SATURATED (negative state)
+        if new_state not in [SignalState.IGNITION, SignalState.ACCELERATING, SignalState.FORMING_EARLY]:
             return False
         
         # Check cooldown
