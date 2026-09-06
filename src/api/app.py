@@ -359,6 +359,54 @@ def token_flow(address):
         return jsonify({"error": str(e)})
 
 
+@app.route('/api/v1/trades/dashboard')
+def trades_dashboard():
+    """Simple trade dashboard - open positions, balance, budget."""
+    try:
+        scanner = get_scanner()
+        
+        # Get paper engine positions
+        positions = []
+        if scanner and scanner.paper_engine:
+            for addr, pos in scanner.paper_engine.positions.items():
+                # Get volume from flow analyzer
+                volume_30s = 0.0
+                try:
+                    metrics = scanner.flow_analyzer.get_metrics(addr, window_seconds=30)
+                    if metrics:
+                        volume_30s = metrics.gross_buy_flow + metrics.gross_sell_flow
+                except:
+                    pass
+                
+                positions.append({
+                    "token": addr[:16] + "...",
+                    "full_address": addr,
+                    "entry_value": pos.position_value,
+                    "entry_volume_30s": pos.entry_volume or volume_30s,
+                    "entry_mcap": pos.entry_mcap,
+                    "entry_liquidity": pos.entry_liquidity,
+                    "entry_state": pos.entry_state,
+                    "entry_time": pos.entry_decision_time.isoformat() if pos.entry_decision_time else None,
+                    "state": pos.state,
+                })
+        
+        budget = 1000.0
+        deployed = sum(p["entry_value"] for p in positions)
+        remaining = budget - deployed
+        
+        return jsonify({
+            "open_positions": positions,
+            "total_positions": len(positions),
+            "budget_total": budget,
+            "budget_used": deployed,
+            "budget_remaining": remaining,
+            "per_position": 100.0,
+            "mode": "PAPER" if (scanner and scanner.paper_engine) else "NONE",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/api/v1/performance')
 def performance_stats():
     """Get performance statistics for forward validation."""

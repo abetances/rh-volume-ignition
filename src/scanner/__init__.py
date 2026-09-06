@@ -67,7 +67,8 @@ class Scanner:
         self._paper_config = PaperConfig(
             max_position_value=100.0,    # $100 per trade
             default_position_pct=1.0,     # Use full position value
-            min_confidence_for_entry=0.3,  # Lower threshold
+            min_confidence_for_entry=0.0,  # Any confidence
+            require_ignition_state=False,  # Allow any state
             stop_loss_pct=-0.15,  # 15% stop
             max_hold_time_seconds=7200,  # 2 hours max
         )
@@ -247,10 +248,12 @@ class Scanner:
                 entry_volume=flow.native_amount,
             )
             
-            # Execute entry if score >= 15 and under budget limit ($1000 max = 10 positions)
-            if (decision.ignition_score >= 15 
-                and token not in self.paper_engine.positions
-                and len(self.paper_engine.positions) < 10):
+            # Execute entry if score >= 0 (any score = aggressive)
+            # Hard cap: max 10 positions = $1000
+            if (decision.ignition_score >= 0 
+                and token not in self.paper_engine.positions 
+                and len(self.paper_engine.positions) < 10
+                and len(self.paper_engine.positions) * 100 <= 1000):
                 # Actually enter the position
                 position = self.paper_engine._enter_paper_position(
                     decision=decision,
