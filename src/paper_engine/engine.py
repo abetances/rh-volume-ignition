@@ -10,6 +10,7 @@ from .models import (
     ExitReason,
     FilterDecision,
     TokenDecision,
+    OutcomeObservation,
 )
 from .config import PaperConfig, DEFAULT_CONFIG
 
@@ -24,6 +25,15 @@ class PaperEngine:
     positions: Dict[str, PaperPosition] = field(default_factory=dict)
     decisions: List[TokenDecision] = field(default_factory=list)
     completed_trades: List[PaperTrade] = field(default_factory=list)
+    
+    # Outcome observations - continue tracking after position exit
+    outcome_observations: Dict[str, OutcomeObservation] = field(default_factory=dict)
+    
+    # Track latest state per token for exit decisions
+    _latest_state: Dict[str, dict] = field(default_factory=dict)
+    
+    # Track saturation history - reject if token was ever saturated
+    _was_saturated: Dict[str, bool] = field(default_factory=dict)
     
     def evaluate_signal(
         self,
@@ -41,6 +51,7 @@ class PaperEngine:
         ignition_score: float,
         confidence: float,
         why_now: str,
+        entry_volume: float = 0.0,
     ) -> TokenDecision:
         """Evaluate a signal and record the decision."""
         
@@ -49,10 +60,19 @@ class PaperEngine:
             state, saturation, ignition_score, confidence, tradeability_trend
         )
         
-        # Check paper entry eligibility
-        entry_eligible, rejection_reason = self._check_entry_eligibility(
-            state, saturation, confidence, tradeability_trend
-        )
+        # CRITICAL: Check if token was ever saturated before allowing entry
+        # This prevents entering tokens that already had their peak volume
+        was_ever_saturated = self._was_saturated.get(token_address, False)
+        
+        if was_ever_saturated and token_address not in self.positions:
+            # Token was saturated before - reject entry even if currently unsaturated
+            entry_eligible = False
+            rejection_reason = "previously_saturated"
+        else:
+            # Check paper entry eligibility
+            entry_eligible, rejection_reason = self._check_entry_eligibility(
+                state, saturation, confidence, tradeability_trend
+            )
         
         decision = TokenDecision(
             token_address=token_address,
@@ -79,7 +99,22 @@ class PaperEngine:
         
         # Auto-enter if eligible
         if entry_eligible and token_address not in self.positions:
-            self._enter_paper_position(decision, timestamp)
+            self._enter_paper_position(decision, timestamp, entry_volume)
+        
+        # Track saturation history - reject if token was ever saturated
+        # This catches the "enter after saturation already happened" bug
+        if saturation in ['ALREADY_CROWDED', 'DECELERATING', 'SATURATED']:
+            self._was_saturated[token_address] = True
+        
+        # Store latest state for exit decisions
+        self._latest_state[token_address] = {
+            'state': state,
+            'saturation': saturation,
+            'tradeability_trend': tradeability_trend,
+            'confidence': confidence,
+            'timestamp': timestamp,
+            'was_saturated_before': self._was_saturated.get(token_address, False),
+        }
         
         return decision
     
@@ -133,10 +168,17 @@ class PaperEngine:
             if state not in ['IGNITION', 'ACCELERATING']:
                 return False, f"state={state} not ignition"
         
-        # Must not be saturated
+        # Must not be saturated (current state)
         if self.config.require_not_saturated:
             if saturation in ['ALREADY_CROWDED', 'DECELERATING']:
                 return False, f"saturation={saturation}"
+        
+        # CRITICAL: Must never have been saturated before (reject late entries)
+        # This catches the "enter after saturation already happened" bug
+        # We check the global history flag that was set in evaluate_signal
+        # The _was_saturated dict is checked via the latest_state which includes was_saturated_before
+        # Actually, we need to check this separately since _check_entry_eligibility doesn't have access to _was_saturated
+        # So we'll handle this in evaluate_signal instead - reject before calling this method
         
         # Confidence threshold
         if confidence < self.config.min_confidence_for_entry:
@@ -152,13 +194,15 @@ class PaperEngine:
         self,
         decision: TokenDecision,
         timestamp: datetime,
+        entry_volume: float = 0.0,
     ) -> PaperPosition:
         """Enter a paper position."""
         
         trade_id = str(uuid.uuid4())[:8]
         
-        # Get entry volume from the decision's metrics
-        entry_volume = decision.ignition_score * 1000  # Approximate - would need real volume feed
+        # Use provided entry volume (30s windowed volume from scanner)
+        if entry_volume <= 0:
+            entry_volume = decision.ignition_score * 1000  # Fallback approximation
         
         position = PaperPosition(
             paper_trade_id=trade_id,
@@ -172,10 +216,19 @@ class PaperEngine:
             
             entry_reason=decision.why_now or f"IGNITION signal, confidence={decision.confidence:.2f}",
             entry_volume=entry_volume,
+            entry_state=decision.state,  # Store state at entry for FLOW_REVERSAL check
             state="open",
         )
         
         self.positions[decision.token_address] = position
+        
+        # Create immutable outcome observation (continues tracking after exit)
+        self.outcome_observations[decision.token_address] = OutcomeObservation(
+            token_address=decision.token_address,
+            entry_decision_time=timestamp,
+            volume_window_seconds=30,  # Using 30s rolling window as canonical
+        )
+        
         return position
     
     def update_positions(
@@ -201,6 +254,14 @@ class PaperEngine:
         
         exited = []
         
+        # Update outcome observations INDEPENDENTLY of position state
+        # This continues tracking even after position exits
+        for token, obs in self.outcome_observations.items():
+            current_volume = token_volumes.get(token, 0.0)
+            current_price = token_prices.get(token, 0.0)
+            self._update_outcome_observation(obs, current_volume, current_price, current_time)
+        
+        # Update open positions
         for token, position in list(self.positions.items()):
             if position.state != "open":
                 continue
@@ -213,7 +274,7 @@ class PaperEngine:
             if token in token_liquidity:
                 position.current_liquidity = token_liquidity[token]
             
-            # Update volume metrics (research only - not used for entry/exit)
+            # Update volume metrics for positions (research only)
             if token in token_volumes:
                 self._update_volume_metrics(position, token_volumes[token], current_time)
             
@@ -234,6 +295,60 @@ class PaperEngine:
             position.updated_at = current_time
         
         return exited
+    
+    def _update_outcome_observation(
+        self,
+        obs: OutcomeObservation,
+        current_volume: float,
+        current_price: float,
+        current_time: datetime,
+    ):
+        """Update outcome observation at fixed horizons after entry.
+        
+        Independent of position state - continues tracking after exit.
+        """
+        entry_time = obs.entry_decision_time
+        seconds_since_entry = (current_time - entry_time).total_seconds()
+        
+        # Record at each horizon (first observation only)
+        if seconds_since_entry >= 30 and obs.volume_30s == 0:
+            obs.volume_30s = current_volume
+            obs.price_30s = current_price
+        
+        if seconds_since_entry >= 120 and obs.volume_2m == 0:
+            obs.volume_2m = current_volume
+            obs.price_2m = current_price
+            
+        if seconds_since_entry >= 300 and obs.volume_5m == 0:
+            obs.volume_5m = current_volume
+            obs.price_5m = current_price
+            
+        if seconds_since_entry >= 600 and obs.volume_10m == 0:
+            obs.volume_10m = current_volume
+            obs.price_10m = current_price
+        
+        # Track max volume at each horizon
+        if seconds_since_entry <= 30:
+            if current_volume > obs.max_volume_30s:
+                obs.max_volume_30s = current_volume
+                obs.peak_volume_30s_time = current_time
+        
+        if seconds_since_entry <= 120:
+            if current_volume > obs.max_volume_2m:
+                obs.max_volume_2m = current_volume
+                obs.peak_volume_2m_time = current_time
+        
+        if seconds_since_entry <= 300:
+            if current_volume > obs.max_volume_5m:
+                obs.max_volume_5m = current_volume
+                obs.peak_volume_5m_time = current_time
+        
+        if seconds_since_entry <= 600:
+            if current_volume > obs.max_volume_10m:
+                obs.max_volume_10m = current_volume
+                obs.peak_volume_10m_time = current_time
+        
+        obs.updated_at = current_time
     
     def _update_volume_metrics(
         self,
@@ -272,7 +387,15 @@ class PaperEngine:
         position: PaperPosition,
         current_time: datetime,
     ) -> Optional[ExitReason]:
-        """Check if position should be exited."""
+        """Check if position should be exited.
+        
+        Exit reasons checked in order:
+        1. STOP_LOSS - return <= -10%
+        2. SIGNAL_FADE - state changed away from IGNITION/ACCELERATING
+        3. SATURATED - token entered saturated state
+        4. FLOW_REVERSAL - acceleration turned to deceleration
+        5. MAX_HOLD_TIME - held longer than 24h
+        """
         
         # Stop loss
         if position.paper_return <= self.config.stop_loss_pct:
@@ -281,6 +404,30 @@ class PaperEngine:
         # Max hold time
         if position.hold_time_seconds >= self.config.max_hold_time_seconds:
             return ExitReason.MAX_HOLD_TIME
+        
+        # Get latest state for this token
+        token = position.token_address
+        if token in self._latest_state:
+            state_info = self._latest_state[token]
+            current_state = state_info.get('state', '')
+            saturation = state_info.get('saturation', '')
+            tradeability_trend = state_info.get('tradeability_trend', '')
+            
+            # SIGNAL_FADE - state changed away from IGNITION/ACCELERATING
+            if current_state in ['QUIET', 'FORMING_EARLY', 'FORMING', 'FADING']:
+                return ExitReason.SIGNAL_FADE
+            
+            # SATURATED - token entered saturated state
+            if saturation in ['ALREADY_CROWDED', 'DECELERATING', 'SATURATED']:
+                return ExitReason.SATURATION
+            
+            # FLOW_REVERSAL - acceleration turned to deceleration (check if previously ACCELERATING)
+            if current_state == 'QUIET' and position.entry_state in ['IGNITION', 'ACCELERATING']:
+                return ExitReason.FLOW_REVERSAL
+            
+            # TRADEABILITY_DETERIORATION - tradeability trend declined
+            if tradeability_trend == 'declining':
+                return ExitReason.TRADEABILITY_DETERIORATION
         
         return None
     
@@ -310,11 +457,12 @@ class PaperEngine:
         vol_exp_5m = position.max_volume_5m / entry_vol if entry_vol > 0 else 0.0
         vol_exp_10m = position.max_volume_10m / entry_vol if entry_vol > 0 else 0.0
         
-        # Time to peak volume
+        # Time to peak volume (properly calculate)
         def calc_seconds_to_peak(peak_time, entry_time):
             if peak_time and entry_time:
-                return (peak_time - entry_time).total_seconds()
-            return 0.0
+                delta = (peak_time - entry_time).total_seconds()
+                return delta if delta > 0 else 0.0
+            return -1.0  # -1 means not observed
         
         # Create completed trade record
         trade = PaperTrade(

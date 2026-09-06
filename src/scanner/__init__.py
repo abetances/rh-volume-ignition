@@ -13,6 +13,8 @@ from src.providers import get_provider_manager, ProviderManager
 from src.db import get_database, Database
 from src.signals.flow_analyzer import get_flow_analyzer
 from src.signals.flow_processor import get_flow_processor
+from src.paper_engine.engine import PaperEngine
+from src.paper_engine.config import PaperConfig
 
 
 @dataclass
@@ -59,6 +61,16 @@ class Scanner:
         # Lazy-loaded flow analyzer and processor
         self._flow_analyzer = None
         self._flow_processor = None
+        
+        # Paper engine for auto-trading
+        self._paper_engine = None
+        self._paper_config = PaperConfig(
+            max_position_value=10000.0,  # Aggressive: $10k max per position
+            default_position_pct=0.25,   # 25% of bankroll per trade
+            min_confidence_for_entry=0.5,  # Lower threshold for more entries
+            stop_loss_pct=-0.15,  # 15% stop
+            max_hold_time_seconds=7200,  # 2 hours max
+        )
     
     @property
     def flow_analyzer(self):
@@ -75,6 +87,13 @@ class Scanner:
             from src.signals.flow_processor import get_flow_processor
             self._flow_processor = get_flow_processor()
         return self._flow_processor
+    
+    @property
+    def paper_engine(self):
+        """Lazy load paper engine."""
+        if self._paper_engine is None:
+            self._paper_engine = PaperEngine(config=self._paper_config)
+        return self._paper_engine
     
     def start(self):
         """Start the scanner."""
@@ -186,12 +205,62 @@ class Scanner:
             
             # Process through flow processor -> analyzer
             flow = self.flow_processor.process_event(event_dict)
-            print(f"[SIGNAL DEBUG] Flow processor result: {flow}")
+            #print(f"[SIGNAL DEBUG] Flow processor result: {flow}")
             if flow:
                 self.flow_analyzer.ingest_trade(flow)
-                print(f"[SIGNAL] ✅ Ingested: {flow.token_address[:16]}... {flow.side} {flow.native_amount:.0f}")
+                #print(f"[SIGNAL] ✅ Ingested: {flow.token_address[:16]}... {flow.side} {flow.native_amount:.0f}")
+                
+                # Evaluate with paper engine for potential entry
+                self._evaluate_for_paper(flow)
             else:
                 print(f"[SIGNAL DEBUG] Flow processor returned None")
+        except Exception as e:
+            print(f"[SIGNAL ERROR] _process_event_for_signals: {e}")
+
+    def _evaluate_for_paper(self, flow):
+        """Evaluate a trade for paper trading entry."""
+        try:
+            token = flow.token_address
+            
+            # Get token metrics from flow analyzer
+            metrics = self.flow_analyzer.get_metrics(token, window_seconds=60)
+            
+            # Get composite score
+            composite = self.flow_analyzer.compute_composite_ignition(token)
+            
+            # Evaluate signal - use correct field names
+            decision = self.paper_engine.evaluate_signal(
+                token_address=token,
+                timestamp=datetime.utcnow(),
+                state=metrics.signal_state.value if metrics else "UNKNOWN",
+                saturation="UNKNOWN",  # TokenFlowMetrics doesn't have saturation field
+                novel_capital_accel=metrics.novel_capital_acceleration if metrics else 0,
+                buyer_accel=metrics.buyer_acceleration if metrics else 0,
+                buyer_quality=metrics.independence_ratio if metrics else 0,
+                recurring_actor=False,
+                tradeability_trend="UNKNOWN",  # Not in TokenFlowMetrics
+                reawakening=False,
+                rotation=False,
+                ignition_score=composite.score if composite else 0,
+                confidence=composite.confidence / 100.0 if composite else 0,  # Convert from 0-100 to 0-1
+                why_now=composite.why_now if composite else "",
+                entry_volume=flow.native_amount,
+            )
+            
+            # Execute entry if score is high enough (bypass strict state check for now)
+            if decision.ignition_score >= 20 and token not in self.paper_engine.positions:
+                # Actually enter the position
+                position = self.paper_engine._enter_paper_position(
+                    decision=decision,
+                    timestamp=datetime.utcnow(),
+                    entry_volume=flow.native_amount
+                )
+                print(f"[PAPER] 🚀 ENTERED {token[:16]}... value=${position.position_value:.2f}")
+            elif decision.entry_rejection_reason:
+                print(f"[PAPER] ❌ REJECT {token[:16]}... {decision.entry_rejection_reason}")
+                
+        except Exception as e:
+            print(f"[PAPER ERROR] _evaluate_for_paper: {e}")
         except Exception as e:
             print(f"[SIGNAL ERROR] _process_event_for_signals: {e}")
     

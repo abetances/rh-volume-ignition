@@ -51,6 +51,51 @@ class FilterDecision(Enum):
 
 
 @dataclass
+class OutcomeObservation:
+    """Immutable outcome tracking that continues after position exit.
+    
+    Tracks volume and price at fixed horizons after paper entry,
+    independent of whether the position is still open.
+    """
+    token_address: str
+    entry_decision_time: datetime
+    
+    # Horizon: +30 seconds
+    volume_30s: float = 0.0
+    price_30s: float = 0.0
+    
+    # Horizon: +2 minutes
+    volume_2m: float = 0.0
+    price_2m: float = 0.0
+    
+    # Horizon: +5 minutes  
+    volume_5m: float = 0.0
+    price_5m: float = 0.0
+    
+    # Horizon: +10 minutes
+    volume_10m: float = 0.0
+    price_10m: float = 0.0
+    
+    # Peak volume tracking (max observed within horizon)
+    max_volume_30s: float = 0.0
+    max_volume_2m: float = 0.0
+    max_volume_5m: float = 0.0
+    max_volume_10m: float = 0.0
+    
+    # Timestamps of peak
+    peak_volume_30s_time: Optional[datetime] = None
+    peak_volume_2m_time: Optional[datetime] = None
+    peak_volume_5m_time: Optional[datetime] = None
+    peak_volume_10m_time: Optional[datetime] = None
+    
+    # Volume window definition used
+    volume_window_seconds: int = 30  # e.g., volume_rate_30s
+    
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class TokenDecision:
     """Complete decision record for a token at a point in time."""
     token_address: str
@@ -106,6 +151,7 @@ class PaperPosition:
     entry_mcap: float = 0.0
     entry_liquidity: float = 0.0
     entry_reason: str = ""
+    entry_state: str = ""  # State at entry (IGNITION, ACCELERATING, etc.)
     
     # Current state
     current_price: float = 0.0
