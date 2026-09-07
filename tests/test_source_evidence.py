@@ -13,7 +13,7 @@ from src.signals.flow_processor import FlowProcessor
 def scanner():
     obj = Scanner.__new__(Scanner)
     obj.stats = IngestStats()
-    obj._recent_tx_hashes = deque()
+    obj._recent_event_keys = deque()
     obj._flow_processor = Mock()
     obj._flow_processor.process_event.return_value = None
     return obj

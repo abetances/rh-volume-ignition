@@ -54,7 +54,7 @@ class Scanner:
         self._last_poll: Dict[str, datetime] = {}
         
         # Recent events buffer for dedup
-        self._recent_tx_hashes: deque = deque(maxlen=10000)
+        self._recent_event_keys: deque = deque(maxlen=10000)
         
         # Running state
         self._running = False
@@ -153,10 +153,7 @@ class Scanner:
                     
                     # Process and persist events
                     for event in events:
-                        if self._dedupe_event(event):
-                            self.db.insert_event(event)
-                            self.stats.events_ingested += 1
-                            self.stats.last_event_time = datetime.utcnow()
+                        if self._persist_event(event):
                             
                             # Update watch universe based on event
                             self._update_watch_universe(event)
@@ -352,10 +349,6 @@ class Scanner:
             log_index = int(log.get("logIndex", "0x0"), 16)
             tx_hash = log.get("transactionHash", "")
             
-            # Skip if we've seen this tx recently
-            if tx_hash in self._recent_tx_hashes:
-                return None
-            
             # Extract contract address
             contract_address = log.get("address", "").lower()
             
@@ -413,14 +406,28 @@ class Scanner:
         
         return signatures.get(event_sig, "Unknown")
     
+    @staticmethod
+    def _event_key(event: RawEvent):
+        # Legacy single-chain storage identity. Chain/hash verification and
+        # reorg handling remain required before using a verified dataset.
+        return (event.block_number, event.transaction_index, event.log_index,
+                event.tx_hash.lower())
+
     def _dedupe_event(self, event: RawEvent) -> bool:
-        """Check if event is a duplicate."""
-        if event.tx_hash in self._recent_tx_hashes:
+        """Check only: failed persistence must never poison the retry cache."""
+        return self._event_key(event) not in self._recent_event_keys
+
+    def _persist_event(self, event: RawEvent) -> bool:
+        """Count and forward only rows actually committed by storage."""
+        if not self._dedupe_event(event):
             return False
-        
-        self._recent_tx_hashes.append(event.tx_hash)
+        if not self.db.insert_event(event):
+            return False
+        self._recent_event_keys.append(self._event_key(event))
+        self.stats.events_ingested += 1
+        self.stats.last_event_time = datetime.now(timezone.utc)
         return True
-    
+
     def _update_watch_universe(self, event: RawEvent):
         """Update watch universe based on new event."""
         address = event.contract_address
