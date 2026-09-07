@@ -87,6 +87,10 @@ class RPCProvider:
         """Get latest block number."""
         return self._call("eth_blockNumber", [])
     
+    def get_chain_id(self) -> RPCResponse:
+        """Get chain ID for verification."""
+        return self._call("eth_chainId", [])
+    
     def get_block_by_number(self, block: int, full: bool = False) -> RPCResponse:
         """Get block by number."""
         hex_block = hex(block)

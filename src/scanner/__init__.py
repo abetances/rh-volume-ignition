@@ -56,6 +56,9 @@ class Scanner:
         # Recent events buffer for dedup
         self._recent_event_keys: deque = deque(maxlen=10000)
         
+        # Verified chain ID (set on first provider connect)
+        self._chain_id: Optional[str] = None
+        
         # Running state
         self._running = False
         self._ingest_thread: Optional[threading.Thread] = None
@@ -103,6 +106,9 @@ class Scanner:
         """Start the scanner."""
         if self._running:
             return
+        
+        # Verify chain ID on startup
+        self._verify_chain_id()
         
         self._running = True
         
@@ -370,7 +376,7 @@ class Scanner:
             raw = dict(log)
             raw['_ingestion'] = {
                 'timestamp_source': 'provider_log.blockTimestamp',
-                'chain_identity': 'UNVERIFIED',
+                'chain_identity': self._chain_id or 'UNVERIFIED',
                 'provider': provider,
             }
             
@@ -427,6 +433,48 @@ class Scanner:
         self.stats.events_ingested += 1
         self.stats.last_event_time = datetime.now(timezone.utc)
         return True
+
+    def _verify_chain_id(self):
+        """Verify chain ID on startup for RH Chain (4663)."""
+        # Expected RH Chain ID
+        RH_CHAIN_ID = hex(4663)  # 0x1237
+        
+        for name, provider in self.providers.providers.items():
+            if hasattr(provider, 'get_chain_id'):
+                result = provider.get_chain_id()
+                if result.success:
+                    chain_id = result.data
+                    if chain_id == RH_CHAIN_ID:
+                        self._chain_id = chain_id
+                        print(f"Verified RH Chain ID: {chain_id}")
+                        return
+        
+        print(f"WARNING: Chain ID verification failed. Using unverified. Expected: {RH_CHAIN_ID}")
+
+    def verify_block_header(self, block_number: int, provider_name: str = None) -> Optional[Dict]:
+        """Verify block header timestamp and hash for audit trail."""
+        provider = None
+        if provider_name and provider_name in self.providers.providers:
+            provider = self.providers.providers[provider_name]
+        else:
+            # Use first available
+            for p in self.providers.providers.values():
+                provider = p
+                break
+        
+        if not provider:
+            return None
+        
+        result = provider.get_block_by_number(block_number, full=True)
+        if result.success and result.data:
+            block = result.data
+            return {
+                'number': int(block.get('number', '0x0'), 16) if isinstance(block.get('number'), str) else block.get('number'),
+                'hash': block.get('hash'),
+                'timestamp': int(block.get('timestamp', '0x0'), 16) if isinstance(block.get('timestamp'), str) else block.get('timestamp'),
+                'parentHash': block.get('parentHash'),
+            }
+        return None
 
     def _update_watch_universe(self, event: RawEvent):
         """Update watch universe based on new event."""
