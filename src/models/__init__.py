@@ -55,7 +55,7 @@ class RawEvent:
     log_index: int = 0
     tx_hash: str = ""
     observed_at: datetime = field(default_factory=datetime.utcnow)
-    block_timestamp: datetime = field(default_factory=datetime.utcnow)
+    block_timestamp: Optional[datetime] = None
     source: str = ""  # provider/rpc name
     contract_address: str = ""
     event_type: str = ""

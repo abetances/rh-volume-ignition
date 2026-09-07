@@ -1,5 +1,7 @@
 """Flow processor - protocol-aware trade decoding."""
 
+from src.source_evidence import parse_source_timestamp
+
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
@@ -155,6 +157,8 @@ class FlowProcessor:
                 native_amount = amount1 if amount1 > 0 else 0
             
             timestamp = self._parse_timestamp(event.get("block_timestamp"))
+            if timestamp is None:
+                return None
             
             return DecodedTrade(
                 token_address=event.get("contract_address", "").lower(),
@@ -224,6 +228,8 @@ class FlowProcessor:
                 trader = "0x" + to_addr
             
             timestamp = self._parse_timestamp(event.get("block_timestamp"))
+            if timestamp is None:
+                return None
             
             return DecodedTrade(
                 token_address=event.get("contract_address", "").lower(),
@@ -256,36 +262,12 @@ class FlowProcessor:
     
     def _parse_timestamp(self, ts_value) -> Optional[datetime]:
         """Parse timestamp from various formats."""
-        if ts_value is None:
-            return datetime.now(timezone.utc)
-        
-        try:
-            if isinstance(ts_value, str) and ts_value.startswith('0x'):
-                ts_int = int(ts_value, 16)
-                return datetime.fromtimestamp(ts_int, tz=timezone.utc)
-            
-            if isinstance(ts_value, int):
-                return datetime.fromtimestamp(ts_value, tz=timezone.utc)
-            
-            if isinstance(ts_value, str):
-                if ts_value.startswith('0x'):
-                    ts_int = int(ts_value, 16)
-                    return datetime.fromtimestamp(ts_int, tz=timezone.utc)
-                if 'T' in ts_value:
-                    return datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
-                try:
-                    ts_int = int(ts_value)
-                    return datetime.fromtimestamp(ts_int, tz=timezone.utc)
-                except:
-                    pass
-            
-            return datetime.now(timezone.utc)
-            
-        except Exception:
-            return datetime.now(timezone.utc)
-    
+        return parse_source_timestamp(ts_value)
+
     def _tradeflow_from_decoded(self, decoded: DecodedTrade) -> TradeFlow:
         """Convert DecodedTrade to TradeFlow."""
+        if parse_source_timestamp(decoded.timestamp) is None:
+            raise ValueError("decoded trade has no reliable source timestamp")
         # Normalize native_amount (assume 18 decimals for ETH/ERC20)
         normalized_amount = decoded.native_amount / 1e18 if decoded.native_amount else 0
         
@@ -296,7 +278,7 @@ class FlowProcessor:
             native_amount=normalized_amount,
             usd_value=decoded.usd_value,
             tx_hash=decoded.tx_hash,
-            timestamp=decoded.timestamp or datetime.now(timezone.utc),
+            timestamp=parse_source_timestamp(decoded.timestamp),
             block=decoded.block,
             tx_index=decoded.tx_index,
             log_index=decoded.log_index,

@@ -1,17 +1,19 @@
 """Scanner and ingestion engine for RH Volume Ignition."""
 
 import os
+import json
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 from collections import deque
 from dataclasses import dataclass, field
 
+from src.source_evidence import parse_raw_reference, parse_source_timestamp
+
 from src.models import RawEvent, WatchedToken, WatchTier, WatchReason, EventType, BudgetState
 from src.providers import get_provider_manager, ProviderManager
 from src.db import get_database, Database
-from src.signals.flow_analyzer import get_flow_analyzer
 from src.signals.flow_processor import get_flow_processor
 from src.paper_engine.engine import PaperEngine
 from src.paper_engine.config import PaperConfig
@@ -25,6 +27,7 @@ class IngestStats:
     last_block: int = 0
     ingest_lag_ms: int = 0
     last_event_time: Optional[datetime] = None
+    unknown_source_timestamp_events: int = 0
     
     # Tier polling intervals (in seconds)
     tier_poll_intervals: Dict[int, int] = field(default_factory=lambda: {
@@ -179,7 +182,7 @@ class Scanner:
             data = "0x"
             if hasattr(event, 'raw_reference') and event.raw_reference:
                 try:
-                    raw = eval(event.raw_reference) if isinstance(event.raw_reference, str) else event.raw_reference
+                    raw = parse_raw_reference(event.raw_reference)
                     topics = raw.get('topics', [])
                     data = raw.get('data', '0x')
                     print(f"[SIGNAL DEBUG] Parsed raw_reference: topics={len(topics)}, data={data[:20]}...")
@@ -191,6 +194,10 @@ class Scanner:
                 print(f"[SIGNAL DEBUG] No topics for event {event.tx_hash[:16]}...")
                 return
             
+            source_time = parse_source_timestamp(event.block_timestamp)
+            if source_time is None:
+                return  # Unknown source time cannot become a live flow signal.
+
             # Convert event to dict for processor
             event_dict = {
                 "contract_address": event.contract_address,
@@ -198,7 +205,7 @@ class Scanner:
                 "transaction_index": event.transaction_index,
                 "log_index": event.log_index,
                 "tx_hash": event.tx_hash,
-                "block_timestamp": event.block_timestamp.isoformat() if event.block_timestamp else datetime.utcnow().isoformat(),
+                "block_timestamp": source_time.isoformat(),
                 "topics": topics,
                 "data": data,
                 "source": event.source,
@@ -360,8 +367,19 @@ class Scanner:
                 event_sig = topics[0]
                 event_type = self._identify_event_type(event_sig)
             
-            # Parse timestamp (we'd need to fetch block for this in production)
-            block_timestamp = datetime.utcnow()
+            # eth_getLogs need not include blockTimestamp. Unknown time is a
+            # coverage gap, not an event happening 'now'. Header enrichment is
+            # required before these logs can enter time-windowed signals.
+            block_timestamp = parse_source_timestamp(log.get('blockTimestamp'))
+            if block_timestamp is None:
+                self.stats.unknown_source_timestamp_events += 1
+                return None
+            raw = dict(log)
+            raw['_ingestion'] = {
+                'timestamp_source': 'provider_log.blockTimestamp',
+                'chain_identity': 'UNVERIFIED',
+                'provider': provider,
+            }
             
             return RawEvent(
                 block_number=block_number,
@@ -369,11 +387,11 @@ class Scanner:
                 log_index=log_index,
                 tx_hash=tx_hash,
                 block_timestamp=block_timestamp,
-                observed_at=datetime.utcnow(),
+                observed_at=datetime.now(timezone.utc),
                 source=provider,
                 contract_address=contract_address,
                 event_type=event_type,
-                raw_reference=str(log)
+                raw_reference=json.dumps(raw)
             )
             
         except Exception as e:
@@ -497,6 +515,8 @@ class Scanner:
             "running": self._running,
             "last_block": self.stats.last_block,
             "ingest_lag_ms": self.stats.ingest_lag_ms,
+            "unknown_source_timestamp_events": self.stats.unknown_source_timestamp_events,
+            "chain_identity": "UNVERIFIED",
             "events_per_second": self.stats.events_per_second,
             "total_events": self.stats.events_ingested,
             "last_event_time": self.stats.last_event_time.isoformat() if self.stats.last_event_time else None,
